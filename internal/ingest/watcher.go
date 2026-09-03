@@ -109,10 +109,21 @@ func (w *Watcher) Run(ctx context.Context) error {
 	defer ticker.Stop()
 	reload := time.NewTicker(2 * time.Minute)
 	defer reload.Stop()
+	backoff := w.pollInterval
 
 	for {
 		if err := w.pollOnce(ctx); err != nil {
-			w.log.Error("poll failed", "err", err)
+			w.log.Error("poll failed", "err", err, "backoff", backoff.String())
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+			if backoff < 60*time.Second {
+				backoff *= 2
+			}
+		} else {
+			backoff = w.pollInterval
 		}
 		select {
 		case <-ctx.Done():
@@ -152,11 +163,19 @@ func (w *Watcher) pollOnce(ctx context.Context) error {
 	} else {
 		from = from + 1
 	}
+	// Stuck/old cursors from the previous broad poller — jump to tip instead of replaying history.
+	const maxLag = uint64(2_000)
+	if from+maxLag < safe {
+		jump := safe - 64
+		w.log.Warn("cursor too far behind, jumping to tip", "was", from-1, "jump_to", jump, "head", head)
+		from = jump
+		_ = w.store.SetCursor(ctx, cursorName, from-1)
+	}
 	if from > safe {
 		return nil
 	}
 
-	const maxSpan = uint64(500)
+	const maxSpan = uint64(200)
 	to := from + maxSpan
 	if to > safe {
 		to = safe
@@ -182,7 +201,6 @@ func (w *Watcher) pollOnce(ctx context.Context) error {
 	if err := w.store.SetCursor(ctx, cursorName, to); err != nil {
 		return err
 	}
-	w.log.Debug("polled", "from", from, "to", to, "logs", len(logs))
 	return nil
 }
 
