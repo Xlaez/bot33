@@ -1,0 +1,30 @@
+# Known Robinhood Chain NFT contracts used for research / enrichment hints
+collections:
+  - name: StonkBrokers
+    address: "0x539cdd042c2f3d93ebc5be7dfff0c79f3b4fabf0"
+  - name: RH MACHINES
+    address: "0xa3bde969745509cdd41a88e46a38aee57228bf39"
+  - name: Button Presser
+    address: "0xe5143de9d3ccbc31ffb4e7fc66d8320e0e2693d2"
+  - name: Rekt Tradooor
+    address: "0x7b3ecfa33657de415ff269dc97dfa82954cee706"
+  - name: OnChainHoodies
+    address: "0x9ec6c5b9f572a9b02138e553bc5f5882da735f45"
+  - name: QUOTRONS
+    address: "0xbde7bec47cbfc689e5e952b6cdd113a500abcd83"
+  - name: Robin Rebels
+    address: "0x74f46bdc53ed7652f3038622e419bd4cd6a9ca57"
+  - name: Hopium Machines
+    address: "0x7da15c761409cb921a81f0e003704cff418b700b"
+  - name: PitBoys
+    address: "0x57069d845701b50f41327362c1c23789043f8dec"
+  - name: BrosRh
+    address: "0x444444447657f90a85c99c00c0780e4e1c40c897"
+  - name: Spritehood Wisps
+    address: "0xd6577124f96394faee65afd2408f2ffa88445f63"
+  - name: Pepe Must Live
+    address: "0x5219561069a12d6261ee4149ed87901254e22603"
+  - name: Hood Land
+    address: "0x693c7f27dbdd986625079d441c33fb90a105d153"
+  - name: PONS FAM
+    address: "0x2582f12ef9d4aec9e42e5c09cd3016efe3870bb7"

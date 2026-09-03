@@ -1,0 +1,12 @@
+.ENV
+.env
+*.key
+bin/
+dist/
+vendor/
+.idea/
+.vscode/
+*.exe
+*.test
+*.out
+cover.out

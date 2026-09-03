@@ -1,0 +1,320 @@
+{
+  "wallets": [
+    {
+      "address": "0xe595ed0eee63fe6ceb3e6b6770b9d826223a3737",
+      "label": "early-token:QUOTRONS",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "QUOTRONS",
+        "Rekt Tradooor"
+      ],
+      "evidence": [
+        "https://robinhoodchain.blockscout.com/token/0x7b3ecfa33657de415ff269dc97dfa82954cee706/instance/5",
+        "https://robinhoodchain.blockscout.com/token/0xbde7bec47cbfc689e5e952b6cdd113a500abcd83/instance/10"
+      ],
+      "score": 70.0,
+      "active": true
+    },
+    {
+      "address": "0x17e9e0d951e9a52a697180119b90ce682e24c66f",
+      "label": "StonkBrokers-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "StonkBrokers"
+      ],
+      "evidence": [
+        "opensea-collection-owner:StonkBrokers-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0x72749a1e5a92c4cd35052804fcfab49fe257cdf5",
+      "label": "RH-MACHINES-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "RH MACHINES"
+      ],
+      "evidence": [
+        "https://robinhoodchain.blockscout.com/token/0xa3bde969745509cdd41a88e46a38aee57228bf39/instance/1",
+        "opensea-collection-owner:RH-MACHINES-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0xcfbd7e12a0f154a45576a73c1e409200068507b9",
+      "label": "Button-Presser-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "Button Presser"
+      ],
+      "evidence": [
+        "opensea-collection-owner:Button-Presser-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0xdcae87821fa6caea05dbc2811126f4bc7ff73bd1",
+      "label": "Rekt-Tradooor-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "Rekt Tradooor"
+      ],
+      "evidence": [
+        "https://robinhoodchain.blockscout.com/token/0x7b3ecfa33657de415ff269dc97dfa82954cee706/instance/1",
+        "https://robinhoodchain.blockscout.com/token/0x7b3ecfa33657de415ff269dc97dfa82954cee706/instance/11",
+        "https://robinhoodchain.blockscout.com/token/0x7b3ecfa33657de415ff269dc97dfa82954cee706/instance/12",
+        "https://robinhoodchain.blockscout.com/token/0x7b3ecfa33657de415ff269dc97dfa82954cee706/instance/13",
+        "https://robinhoodchain.blockscout.com/token/0x7b3ecfa33657de415ff269dc97dfa82954cee706/instance/15",
+        "https://robinhoodchain.blockscout.com/token/0x7b3ecfa33657de415ff269dc97dfa82954cee706/instance/16",
+        "https://robinhoodchain.blockscout.com/token/0x7b3ecfa33657de415ff269dc97dfa82954cee706/instance/18",
+        "https://robinhoodchain.blockscout.com/token/0x7b3ecfa33657de415ff269dc97dfa82954cee706/instance/19"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0xd08a299e6f8e4cb152506802b37c35b940dab0d8",
+      "label": "OnChainHoodies-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "OnChainHoodies"
+      ],
+      "evidence": [
+        "opensea-collection-owner:OnChainHoodies-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0x7171e64e979265aed6588577d1c6b60a701d7866",
+      "label": "QUOTRONS-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "QUOTRONS"
+      ],
+      "evidence": [
+        "opensea-collection-owner:QUOTRONS-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0xbe94988b540a22abd25a6b6db381f85fd4b8e111",
+      "label": "Robin-Rebels-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "Robin Rebels"
+      ],
+      "evidence": [
+        "opensea-collection-owner:Robin-Rebels-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0x69cff5f7faa679f93a82ffccd771bf3bfb0537c7",
+      "label": "Hopium-Machines-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "Hopium Machines"
+      ],
+      "evidence": [
+        "opensea-collection-owner:Hopium-Machines-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0x4be25231574464e58c593bc3001b4bdee37954a6",
+      "label": "PitBoys-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "PitBoys"
+      ],
+      "evidence": [
+        "opensea-collection-owner:PitBoys-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0x2dbac9443e95bb0735f665c5129617f74a160fb7",
+      "label": "BrosRh-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "BrosRh"
+      ],
+      "evidence": [
+        "opensea-collection-owner:BrosRh-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0x4bda26da074c22ec79e66e3311a5595253cf1be6",
+      "label": "Spritehood-Wisps-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "Spritehood Wisps"
+      ],
+      "evidence": [
+        "opensea-collection-owner:Spritehood-Wisps-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0xa13070bd3e2b6dd8c4e844d96e759c1eba41ce1a",
+      "label": "Pepe-Must-Live-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "Pepe Must Live"
+      ],
+      "evidence": [
+        "https://robinhoodchain.blockscout.com/token/0x5219561069a12d6261ee4149ed87901254e22603/instance/150",
+        "opensea-collection-owner:Pepe-Must-Live-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0xbabf2cc223f21eec8ffffcdf7996654ccd906d82",
+      "label": "Hood-Land-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "Hood Land"
+      ],
+      "evidence": [
+        "opensea-collection-owner:Hood-Land-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0xddbddf3a889f1382c42b603747a7b8f209e420c6",
+      "label": "PONS-FAM-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "PONS FAM"
+      ],
+      "evidence": [
+        "opensea-collection-owner:PONS-FAM-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0xda3f2de081ba260e53f5a11f9f858a2161bb953a",
+      "label": "pyopyopyopyo-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "pyopyopyopyo"
+      ],
+      "evidence": [
+        "opensea-collection-owner:pyopyopyopyo-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    },
+    {
+      "address": "0x48d39d45795f3704d3c4ef751bd8aeecb007a417",
+      "label": "Cash-Cats-owner",
+      "source": "curated",
+      "tags": [
+        "rhc-nft",
+        "curated-seed"
+      ],
+      "collections": [
+        "Cash Cats"
+      ],
+      "evidence": [
+        "opensea-collection-owner:Cash-Cats-owner"
+      ],
+      "score": 60.0,
+      "active": true
+    }
+  ],
+  "contracts": {
+    "StonkBrokers": "0x539cdd042c2f3d93ebc5be7dfff0c79f3b4fabf0",
+    "RH MACHINES": "0xa3bde969745509cdd41a88e46a38aee57228bf39",
+    "Button Presser": "0xe5143de9d3ccbc31ffb4e7fc66d8320e0e2693d2",
+    "Rekt Tradooor": "0x7b3ecfa33657de415ff269dc97dfa82954cee706",
+    "OnChainHoodies": "0x9ec6c5b9f572a9b02138e553bc5f5882da735f45",
+    "QUOTRONS": "0xbde7bec47cbfc689e5e952b6cdd113a500abcd83",
+    "Robin Rebels": "0x74f46bdc53ed7652f3038622e419bd4cd6a9ca57",
+    "Hopium Machines": "0x7da15c761409cb921a81f0e003704cff418b700b",
+    "PitBoys": "0x57069d845701b50f41327362c1c23789043f8dec",
+    "BrosRh": "0x444444447657f90a85c99c00c0780e4e1c40c897",
+    "Spritehood Wisps": "0xd6577124f96394faee65afd2408f2ffa88445f63",
+    "Pepe Must Live": "0x5219561069a12d6261ee4149ed87901254e22603",
+    "Hood Land": "0x693c7f27dbdd986625079d441c33fb90a105d153",
+    "PONS FAM": "0x2582f12ef9d4aec9e42e5c09cd3016efe3870bb7"
+  }
+}
