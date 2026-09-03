@@ -5,9 +5,13 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/xlaez/bot33/internal/config"
 	"github.com/xlaez/bot33/internal/store"
 	"github.com/xlaez/bot33/internal/wallet"
@@ -31,43 +35,116 @@ func main() {
 	}
 	defer st.Close()
 
-	app := fiber.New(fiber.Config{AppName: "bot33-api"})
-	app.Get("/health", func(c *fiber.Ctx) error {
+	if path := strings.TrimSpace(os.Getenv("COLLECTIONS_PATH")); path != "" {
+		if n, err := st.LoadCollectionsFile(ctx, path); err != nil {
+			log.Warn("collections seed", "err", err)
+		} else {
+			log.Info("collections loaded", "count", n)
+		}
+	} else if _, err := os.Stat("configs/collections.yaml"); err == nil {
+		if n, err := st.LoadCollectionsFile(ctx, "configs/collections.yaml"); err == nil {
+			log.Info("collections loaded", "count", n)
+		}
+	}
+
+	app := fiber.New(fiber.Config{
+		AppName:      "bot33",
+		ErrorHandler: apiError,
+	})
+	app.Use(logger.New())
+	app.Use(cors.New(cors.Config{
+		AllowOrigins: "*",
+		AllowMethods: "GET,POST,PATCH,DELETE,OPTIONS",
+		AllowHeaders: "Origin, Content-Type, Accept",
+	}))
+
+	api := app.Group("/api")
+	api.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"ok": true, "chain_id": cfg.ChainID})
 	})
-	app.Get("/wallets", func(c *fiber.Ctx) error {
+	api.Get("/status", func(c *fiber.Ctx) error {
+		stats, err := st.Stats(c.Context())
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		stats.ChainID = cfg.ChainID
+		return c.JSON(stats)
+	})
+
+	api.Get("/wallets", func(c *fiber.Ctx) error {
 		rows, err := st.ListWallets(c.Context())
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
+		if rows == nil {
+			rows = []wallet.Record{}
+		}
 		return c.JSON(rows)
 	})
-	app.Get("/wallets/watch", func(c *fiber.Ctx) error {
+	api.Get("/wallets/watch", func(c *fiber.Ctx) error {
 		rows, err := st.ListActiveWatchSet(c.Context())
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
+		if rows == nil {
+			rows = []wallet.Record{}
+		}
 		return c.JSON(rows)
 	})
-	app.Post("/wallets", func(c *fiber.Ctx) error {
+	api.Post("/wallets", func(c *fiber.Ctx) error {
 		var body wallet.Record
 		if err := c.BodyParser(&body); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
 		body.Address = wallet.NormalizeAddress(body.Address)
-		if body.Address == "" {
-			return fiber.NewError(fiber.StatusBadRequest, "address required")
+		if body.Address == "" || !strings.HasPrefix(body.Address, "0x") || len(body.Address) != 42 {
+			return fiber.NewError(fiber.StatusBadRequest, "valid 0x address required")
 		}
 		if body.Source == "" {
 			body.Source = wallet.SourceCurated
 		}
 		body.Active = true
+		if len(body.Tags) == 0 {
+			body.Tags = []string{"manual"}
+		}
 		if err := st.UpsertWallet(c.Context(), body); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
 		return c.Status(fiber.StatusCreated).JSON(body)
 	})
-	app.Post("/wallets/seed", func(c *fiber.Ctx) error {
+	api.Patch("/wallets/:address", func(c *fiber.Ctx) error {
+		var body struct {
+			Active *bool  `json:"active"`
+			Label  string `json:"label"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		addr := wallet.NormalizeAddress(c.Params("address"))
+		if body.Active != nil {
+			if err := st.SetWalletActive(c.Context(), addr, *body.Active); err != nil {
+				return fiber.NewError(fiber.StatusNotFound, err.Error())
+			}
+		}
+		if strings.TrimSpace(body.Label) != "" {
+			if err := st.UpsertWallet(c.Context(), wallet.Record{
+				Address: addr,
+				Label:   body.Label,
+				Source:  wallet.SourceCurated,
+				Active:  true,
+			}); err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			}
+		}
+		return c.SendStatus(fiber.StatusNoContent)
+	})
+	api.Delete("/wallets/:address", func(c *fiber.Ctx) error {
+		if err := st.DeleteWallet(c.Context(), c.Params("address")); err != nil {
+			return fiber.NewError(fiber.StatusNotFound, err.Error())
+		}
+		return c.SendStatus(fiber.StatusNoContent)
+	})
+	api.Post("/wallets/seed", func(c *fiber.Ctx) error {
 		n, err := st.LoadSeedFile(c.Context(), cfg.WalletsSeedPath)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
@@ -75,14 +152,86 @@ func main() {
 		return c.JSON(fiber.Map{"loaded": n, "path": cfg.WalletsSeedPath})
 	})
 
+	api.Get("/trades", func(c *fiber.Ctx) error {
+		rows, err := st.ListTrades(c.Context(), c.QueryInt("limit", 100))
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(rows)
+	})
+
+	api.Get("/collections", func(c *fiber.Ctx) error {
+		rows, err := st.ListCollections(c.Context())
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(rows)
+	})
+	api.Post("/collections", func(c *fiber.Ctx) error {
+		var body store.Collection
+		if err := c.BodyParser(&body); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		body.Address = wallet.NormalizeAddress(body.Address)
+		if body.Address == "" || !strings.HasPrefix(body.Address, "0x") || len(body.Address) != 42 {
+			return fiber.NewError(fiber.StatusBadRequest, "valid 0x address required")
+		}
+		body.Active = true
+		if err := st.UpsertCollection(c.Context(), body); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		return c.Status(fiber.StatusCreated).JSON(body)
+	})
+	api.Delete("/collections/:address", func(c *fiber.Ctx) error {
+		if err := st.DeleteCollection(c.Context(), c.Params("address")); err != nil {
+			return fiber.NewError(fiber.StatusNotFound, err.Error())
+		}
+		return c.SendStatus(fiber.StatusNoContent)
+	})
+	api.Post("/collections/seed", func(c *fiber.Ctx) error {
+		n, err := st.LoadCollectionsFile(c.Context(), "configs/collections.yaml")
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(fiber.Map{"loaded": n})
+	})
+
+	webDir := resolveWebDir()
+	if webDir != "" {
+		app.Static("/", webDir, fiber.Static{
+			Index: "index.html",
+		})
+		app.Get("/*", func(c *fiber.Ctx) error {
+			return c.SendFile(filepath.Join(webDir, "index.html"))
+		})
+	}
+
 	go func() {
 		<-ctx.Done()
 		_ = app.Shutdown()
 	}()
 
-	log.Info("api listening", "addr", cfg.HTTPAddr)
+	log.Info("api listening", "addr", cfg.HTTPAddr, "web", webDir)
 	if err := app.Listen(cfg.HTTPAddr); err != nil {
 		log.Error("api stopped", "err", err)
 		os.Exit(1)
 	}
+}
+
+func apiError(c *fiber.Ctx, err error) error {
+	code := fiber.StatusInternalServerError
+	if e, ok := err.(*fiber.Error); ok {
+		code = e.Code
+	}
+	return c.Status(code).JSON(fiber.Map{"error": err.Error()})
+}
+
+func resolveWebDir() string {
+	candidates := []string{"web/dist", "./web/dist", "/app/web/dist"}
+	for _, p := range candidates {
+		if st, err := os.Stat(p); err == nil && st.IsDir() {
+			return p
+		}
+	}
+	return ""
 }

@@ -1,4 +1,4 @@
-.PHONY: tidy test build run-watcher run-api seed
+.PHONY: tidy test build run-watcher run-api seed web web-build
 
 tidy:
 	go mod tidy
@@ -9,6 +9,12 @@ test:
 build:
 	go build -o bin/watcher ./cmd/watcher
 	go build -o bin/api ./cmd/api
+
+web:
+	cd web && npm run dev
+
+web-build:
+	cd web && npm run build
 
 run-watcher:
 	go run ./cmd/watcher

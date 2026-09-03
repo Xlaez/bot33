@@ -3,6 +3,8 @@
 *.key
 bin/
 dist/
+web/dist/
+web/node_modules/
 vendor/
 .idea/
 .vscode/

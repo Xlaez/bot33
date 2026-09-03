@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -27,12 +29,15 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	_ = godotenv.Load()
+	_ = godotenv.Load(".env.local")
+
 	cfg := Config{
 		HTTPAddr:           getenv("HTTP_ADDR", ":8080"),
 		RHHTTPURL:          getenv("RH_RPC_HTTP", "https://rpc.mainnet.chain.robinhood.com"),
 		RHWSURL:            getenv("RH_RPC_WS", ""),
 		ChainID:            getenvInt64("CHAIN_ID", 4663),
-		DatabaseURL:        getenv("DATABASE_URL", "postgres://bot33:bot33@localhost:5432/bot33?sslmode=disable"),
+		DatabaseURL:        getenv("DATABASE_URL", "postgres://bot33:bot33@localhost:5433/bot33?sslmode=disable"),
 		RedisURL:           getenv("REDIS_URL", "redis://localhost:6379/0"),
 		TelegramBotToken:   os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramChatID:     os.Getenv("TELEGRAM_CHAT_ID"),

@@ -1,14 +1,14 @@
 # bot33 — Robinhood Chain NFT smart-wallet watcher
 
-Go watcher that alerts on Telegram when curated or auto-discovered smart wallets mint/buy NFTs on Robinhood Chain (`4663`).
+Go watcher that alerts on Telegram when curated or auto-discovered smart wallets mint/buy NFTs on Robinhood Chain (`4663`), plus a minimal ops UI.
 
 ## Stack
 
-- Go + Fiber (ops API)
+- Go + Fiber (API + static UI)
+- React (Vite) console at `/`
 - `go-ethereum` log polling
-- PostgreSQL (wallets, dedupe, trades, cursor)
+- PostgreSQL
 - Telegram alerts
-- Hybrid wallets: curated seed + discovery scorer
 
 ## Quick start
 
@@ -16,30 +16,34 @@ Go watcher that alerts on Telegram when curated or auto-discovered smart wallets
 cp .env.example .env
 # fill TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
 
-docker compose up -d postgres redis
-go mod tidy
-go run ./cmd/api &
+docker compose up -d postgres
+make web-build
+go run ./cmd/api
 go run ./cmd/watcher
 ```
 
-API:
-- `GET /health`
-- `GET /wallets` / `GET /wallets/watch`
-- `POST /wallets` — add curated wallet
-- `POST /wallets/seed` — reload `configs/wallets.seed.yaml`
+Open **http://127.0.0.1:8080**
 
-## Refresh curated seed
+Dev UI with hot reload:
 
 ```bash
-python3 scripts/research_seed_fast.py
-# or
-go run ./cmd/research-seed
+go run ./cmd/api      # :8080
+cd web && npm run dev # :5173 proxies /api
 ```
 
-Seed is built from OpenSea collection owners + early `ownerOf` holders across major RHC NFT contracts.
+### UI
+- **Wallets** — list, add, pause/resume, remove, reload seed
+- **NFT activity** — mint/buy/sell feed from watched wallets
+- **Collections** — manage known NFT contracts
+
+### API
+- `GET /api/status` · `GET /api/wallets` · `POST /api/wallets`
+- `PATCH|DELETE /api/wallets/:address`
+- `GET /api/trades` · `GET|POST /api/collections`
 
 ## Tests
 
 ```bash
 go test ./...
+cd web && npm run build
 ```
