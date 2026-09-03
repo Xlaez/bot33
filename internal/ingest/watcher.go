@@ -8,15 +8,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/xlaez/bot33/internal/alert"
 	"github.com/xlaez/bot33/internal/classify"
 	"github.com/xlaez/bot33/internal/enrich"
 	"github.com/xlaez/bot33/internal/store"
 	"github.com/xlaez/bot33/internal/wallet"
-	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 const cursorName = "nft_logs"
@@ -84,6 +84,16 @@ func (w *Watcher) snapshotWatch() map[string]struct{} {
 	return out
 }
 
+func (w *Watcher) watchTopicHashes() []common.Hash {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	out := make([]common.Hash, 0, len(w.watch))
+	for a := range w.watch {
+		out = append(out, common.HexToHash(a))
+	}
+	return out
+}
+
 func (w *Watcher) lookup(addr string) (wallet.Record, bool) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
@@ -117,6 +127,11 @@ func (w *Watcher) Run(ctx context.Context) error {
 }
 
 func (w *Watcher) pollOnce(ctx context.Context) error {
+	addrs := w.watchTopicHashes()
+	if len(addrs) == 0 {
+		return nil
+	}
+
 	head, err := w.client.BlockNumber(ctx)
 	if err != nil {
 		return err
@@ -140,28 +155,40 @@ func (w *Watcher) pollOnce(ctx context.Context) error {
 	if from > safe {
 		return nil
 	}
-	to := from + 2000
+
+	const maxSpan = uint64(500)
+	to := from + maxSpan
 	if to > safe {
 		to = safe
 	}
 
-	q := ethereum.FilterQuery{
-		FromBlock: new(big.Int).SetUint64(from),
-		ToBlock:   new(big.Int).SetUint64(to),
-		Topics:    [][]common.Hash{{classify.TransferTopic, classify.TransferSingleTopic}},
-	}
-	logs, err := w.client.FilterLogs(ctx, q)
+	logs, err := w.fetchWatchedLogs(ctx, from, to, addrs)
 	if err != nil {
 		if to > from {
 			mid := from + (to-from)/2
 			if mid == from {
 				return err
 			}
-			if err1 := w.processRange(ctx, from, mid); err1 != nil {
+			if err1 := w.processRange(ctx, from, mid, addrs); err1 != nil {
 				return err1
 			}
-			return w.processRange(ctx, mid+1, to)
+			return w.processRange(ctx, mid+1, to, addrs)
 		}
+		return err
+	}
+	if err := w.handleLogs(ctx, logs); err != nil {
+		return err
+	}
+	if err := w.store.SetCursor(ctx, cursorName, to); err != nil {
+		return err
+	}
+	w.log.Debug("polled", "from", from, "to", to, "logs", len(logs))
+	return nil
+}
+
+func (w *Watcher) processRange(ctx context.Context, from, to uint64, addrs []common.Hash) error {
+	logs, err := w.fetchWatchedLogs(ctx, from, to, addrs)
+	if err != nil {
 		return err
 	}
 	if err := w.handleLogs(ctx, logs); err != nil {
@@ -170,20 +197,59 @@ func (w *Watcher) pollOnce(ctx context.Context) error {
 	return w.store.SetCursor(ctx, cursorName, to)
 }
 
-func (w *Watcher) processRange(ctx context.Context, from, to uint64) error {
-	q := ethereum.FilterQuery{
+func (w *Watcher) fetchWatchedLogs(ctx context.Context, from, to uint64, addrs []common.Hash) ([]types.Log, error) {
+	var all []types.Log
+
+	// ERC-721 Transfer: topics[0]=sig, [1]=from, [2]=to, [3]=tokenId
+	recv721 := ethereum.FilterQuery{
 		FromBlock: new(big.Int).SetUint64(from),
 		ToBlock:   new(big.Int).SetUint64(to),
-		Topics:    [][]common.Hash{{classify.TransferTopic, classify.TransferSingleTopic}},
+		Topics: [][]common.Hash{
+			{classify.TransferTopic},
+			nil,
+			addrs,
+		},
 	}
-	logs, err := w.client.FilterLogs(ctx, q)
+	logs, err := w.client.FilterLogs(ctx, recv721)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := w.handleLogs(ctx, logs); err != nil {
-		return err
+	all = append(all, logs...)
+
+	if w.alertOnSell {
+		sent721 := ethereum.FilterQuery{
+			FromBlock: new(big.Int).SetUint64(from),
+			ToBlock:   new(big.Int).SetUint64(to),
+			Topics: [][]common.Hash{
+				{classify.TransferTopic},
+				addrs,
+			},
+		}
+		logs, err = w.client.FilterLogs(ctx, sent721)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, logs...)
 	}
-	return w.store.SetCursor(ctx, cursorName, to)
+
+	// ERC-1155 TransferSingle: [0]=sig, [1]=operator, [2]=from, [3]=to
+	recv1155 := ethereum.FilterQuery{
+		FromBlock: new(big.Int).SetUint64(from),
+		ToBlock:   new(big.Int).SetUint64(to),
+		Topics: [][]common.Hash{
+			{classify.TransferSingleTopic},
+			nil,
+			nil,
+			addrs,
+		},
+	}
+	logs, err = w.client.FilterLogs(ctx, recv1155)
+	if err != nil {
+		return nil, err
+	}
+	all = append(all, logs...)
+
+	return all, nil
 }
 
 func (w *Watcher) handleLogs(ctx context.Context, logs []types.Log) error {
@@ -219,6 +285,15 @@ func (w *Watcher) handleLogs(ctx context.Context, logs []types.Log) error {
 		side := string(action)
 		_ = w.store.InsertTrade(ctx, matched, ev.Collection.Hex(), tokenID, side, strings.ToLower(ev.TxHash.Hex()), ev.BlockNumber, "0")
 
+		w.log.Info("nft event",
+			"action", action,
+			"label", rec.Label,
+			"wallet", matched,
+			"collection", name,
+			"token_id", tokenID,
+			"tx", ev.TxHash.Hex(),
+		)
+
 		if w.telegram != nil && w.telegram.Enabled() {
 			if err := w.telegram.Send(ctx, alert.Payload{
 				Wallet:     rec,
@@ -228,16 +303,6 @@ func (w *Watcher) handleLogs(ctx context.Context, logs []types.Log) error {
 			}); err != nil {
 				w.log.Error("telegram send failed", "err", err, "tx", ev.TxHash.Hex())
 			}
-		} else {
-			w.log.Info("alert",
-				"source", rec.Source,
-				"label", rec.Label,
-				"action", action,
-				"wallet", matched,
-				"collection", name,
-				"token_id", tokenID,
-				"tx", ev.TxHash.Hex(),
-			)
 		}
 	}
 	return nil

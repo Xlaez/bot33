@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/xlaez/bot33/internal/alert"
 	"github.com/xlaez/bot33/internal/chain"
@@ -18,21 +19,28 @@ import (
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log.Info("starting watcher")
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Error("config", "err", err)
 		os.Exit(1)
 	}
+	log.Info("config loaded", "root", cfg.RootDir, "chain_id", cfg.ChainID, "rpc", cfg.RHHTTPURL)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	st, err := store.Open(ctx, cfg.DatabaseURL)
+	dbCtx, dbCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer dbCancel()
+	log.Info("connecting database")
+	st, err := store.Open(dbCtx, cfg.DatabaseURL)
 	if err != nil {
 		log.Error("store", "err", err)
 		os.Exit(1)
 	}
 	defer st.Close()
+	log.Info("database ready")
 
 	if _, err := os.Stat(cfg.WalletsSeedPath); err == nil {
 		n, err := st.LoadSeedFile(ctx, cfg.WalletsSeedPath)
@@ -41,14 +49,20 @@ func main() {
 			os.Exit(1)
 		}
 		log.Info("seed loaded", "count", n, "path", cfg.WalletsSeedPath)
+	} else {
+		log.Warn("seed file not found", "path", cfg.WalletsSeedPath)
 	}
 
-	client, err := chain.Dial(ctx, cfg.RHHTTPURL, cfg.RHWSURL, cfg.ChainID)
+	rpcCtx, rpcCancel := context.WithTimeout(ctx, 20*time.Second)
+	defer rpcCancel()
+	log.Info("dialing rpc", "url", cfg.RHHTTPURL)
+	client, err := chain.Dial(rpcCtx, cfg.RHHTTPURL, cfg.RHWSURL, cfg.ChainID)
 	if err != nil {
 		log.Error("chain dial", "err", err)
 		os.Exit(1)
 	}
 	defer client.Close()
+	log.Info("rpc ready")
 
 	tg := alert.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID)
 	en := enrich.New(client.HTTP)
@@ -59,7 +73,7 @@ func main() {
 	go func() { errCh <- watcher.Run(ctx) }()
 	go func() { errCh <- scorer.Run(ctx) }()
 
-	log.Info("watcher started", "chain_id", cfg.ChainID, "telegram", tg.Enabled())
+	log.Info("watcher started", "chain_id", cfg.ChainID, "telegram", tg.Enabled(), "poll", cfg.LogPollInterval.String())
 	select {
 	case <-ctx.Done():
 		log.Info("shutting down")
