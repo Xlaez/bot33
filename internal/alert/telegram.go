@@ -39,10 +39,33 @@ type Payload struct {
 	Collection string
 }
 
-func (t *Telegram) Send(ctx context.Context, p Payload) error {
+func (t *Telegram) SendText(ctx context.Context, msg string) error {
 	if !t.Enabled() {
 		return fmt.Errorf("telegram not configured")
 	}
+	body, _ := json.Marshal(map[string]any{
+		"chat_id":                  t.chatID,
+		"text":                     msg,
+		"disable_web_page_preview": true,
+	})
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", t.token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := t.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		return fmt.Errorf("telegram status %d", res.StatusCode)
+	}
+	return nil
+}
+
+func (t *Telegram) Send(ctx context.Context, p Payload) error {
 	tag := "[CURATED]"
 	if p.Wallet.Source == wallet.SourceDiscovered {
 		tag = fmt.Sprintf("[DISCOVERED score=%.0f]", p.Wallet.Score)
@@ -71,24 +94,5 @@ func (t *Telegram) Send(ctx context.Context, p Payload) error {
 		chain.ExplorerTx(p.Event.TxHash.Hex()),
 		chain.ExplorerAddress(p.Wallet.Address),
 	)
-	body, _ := json.Marshal(map[string]any{
-		"chat_id":    t.chatID,
-		"text":       msg,
-		"disable_web_page_preview": true,
-	})
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", t.token)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	res, err := t.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.StatusCode >= 300 {
-		return fmt.Errorf("telegram status %d", res.StatusCode)
-	}
-	return nil
+	return t.SendText(ctx, msg)
 }

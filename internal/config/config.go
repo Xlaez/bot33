@@ -28,6 +28,7 @@ type Config struct {
 	LogPollInterval    time.Duration
 	StartBlockLag      uint64
 	RootDir            string
+	ExecutorPrivateKey string
 }
 
 func Load() (Config, error) {
@@ -56,6 +57,7 @@ func Load() (Config, error) {
 		LogPollInterval:    getenvDuration("LOG_POLL_INTERVAL", 3*time.Second),
 		StartBlockLag:      uint64(getenvInt64("START_BLOCK_LAG", 32)),
 		RootDir:            root,
+		ExecutorPrivateKey: os.Getenv("EXECUTOR_PRIVATE_KEY"),
 	}
 	if cfg.RHHTTPURL == "" {
 		return Config{}, fmt.Errorf("RH_RPC_HTTP is required")

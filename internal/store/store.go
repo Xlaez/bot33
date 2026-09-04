@@ -94,6 +94,34 @@ CREATE TABLE IF NOT EXISTS collections (
   active BOOLEAN NOT NULL DEFAULT TRUE,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS bot_settings (
+  id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  max_spend_wei NUMERIC NOT NULL DEFAULT 50000000000000000,
+  execute_live BOOLEAN NOT NULL DEFAULT FALSE,
+  auto_copy_mint BOOLEAN NOT NULL DEFAULT FALSE,
+  mint_quantity INTEGER NOT NULL DEFAULT 1,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO bot_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS mint_orders (
+  id BIGSERIAL PRIMARY KEY,
+  source TEXT NOT NULL,
+  collection TEXT NOT NULL,
+  quantity INTEGER NOT NULL DEFAULT 1,
+  value_wei NUMERIC NOT NULL DEFAULT 0,
+  fee_recipient TEXT NOT NULL DEFAULT '',
+  signal_tx TEXT NOT NULL DEFAULT '',
+  tx_hash TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  error TEXT NOT NULL DEFAULT '',
+  dry_run BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mint_orders_created ON mint_orders(created_at DESC);
 `
 	_, err := s.db.ExecContext(ctx, q)
 	if err != nil {
@@ -425,4 +453,103 @@ func (s *Store) LoadSeedFile(ctx context.Context, path string) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+type BotSettings struct {
+	MaxSpendWei  string `json:"max_spend_wei"`
+	ExecuteLive  bool   `json:"execute_live"`
+	AutoCopyMint bool   `json:"auto_copy_mint"`
+	MintQuantity uint64 `json:"mint_quantity"`
+}
+
+type MintOrder struct {
+	ID           int64     `json:"id"`
+	Source       string    `json:"source"`
+	Collection   string    `json:"collection"`
+	Quantity     uint64    `json:"quantity"`
+	ValueWei     string    `json:"value_wei"`
+	FeeRecipient string    `json:"fee_recipient"`
+	SignalTx     string    `json:"signal_tx"`
+	TxHash       string    `json:"tx_hash"`
+	Status       string    `json:"status"`
+	Error        string    `json:"error"`
+	DryRun       bool      `json:"dry_run"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+func (s *Store) GetSettings(ctx context.Context) (BotSettings, error) {
+	var st BotSettings
+	var qty int64
+	err := s.db.QueryRowContext(ctx, `
+SELECT max_spend_wei::text, execute_live, auto_copy_mint, mint_quantity
+FROM bot_settings WHERE id=1
+`).Scan(&st.MaxSpendWei, &st.ExecuteLive, &st.AutoCopyMint, &qty)
+	if err != nil {
+		return st, err
+	}
+	if qty < 1 {
+		qty = 1
+	}
+	st.MintQuantity = uint64(qty)
+	return st, nil
+}
+
+func (s *Store) UpdateSettings(ctx context.Context, st BotSettings) error {
+	if st.MintQuantity == 0 {
+		st.MintQuantity = 1
+	}
+	if st.MaxSpendWei == "" {
+		st.MaxSpendWei = "50000000000000000"
+	}
+	_, err := s.db.ExecContext(ctx, `
+UPDATE bot_settings SET
+  max_spend_wei=$1,
+  execute_live=$2,
+  auto_copy_mint=$3,
+  mint_quantity=$4,
+  updated_at=NOW()
+WHERE id=1
+`, st.MaxSpendWei, st.ExecuteLive, st.AutoCopyMint, st.MintQuantity)
+	return err
+}
+
+func (s *Store) InsertOrder(ctx context.Context, o MintOrder) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO mint_orders(source, collection, quantity, value_wei, fee_recipient, signal_tx, tx_hash, status, error, dry_run)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+`, o.Source, o.Collection, o.Quantity, nullWei(o.ValueWei), o.FeeRecipient, o.SignalTx, o.TxHash, o.Status, o.Error, o.DryRun)
+	return err
+}
+
+func nullWei(v string) string {
+	if v == "" {
+		return "0"
+	}
+	return v
+}
+
+func (s *Store) ListOrders(ctx context.Context, limit int) ([]MintOrder, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, source, collection, quantity, value_wei::text, fee_recipient, signal_tx, tx_hash, status, error, dry_run, created_at
+FROM mint_orders ORDER BY created_at DESC LIMIT $1
+`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MintOrder
+	for rows.Next() {
+		var o MintOrder
+		if err := rows.Scan(&o.ID, &o.Source, &o.Collection, &o.Quantity, &o.ValueWei, &o.FeeRecipient, &o.SignalTx, &o.TxHash, &o.Status, &o.Error, &o.DryRun, &o.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	if out == nil {
+		out = []MintOrder{}
+	}
+	return out, rows.Err()
 }

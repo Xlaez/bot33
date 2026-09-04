@@ -62,6 +62,31 @@ export type Collection = {
   updated_at?: string;
 };
 
+export type Settings = {
+  max_spend_wei: string;
+  max_spend_eth?: string;
+  execute_live: boolean;
+  auto_copy_mint: boolean;
+  mint_quantity: number;
+  has_signer?: boolean;
+  signer_address?: string;
+};
+
+export type MintOrder = {
+  id: number;
+  source: string;
+  collection: string;
+  quantity: number;
+  value_wei: string;
+  fee_recipient: string;
+  signal_tx: string;
+  tx_hash: string;
+  status: string;
+  error: string;
+  dry_run: boolean;
+  created_at: string;
+};
+
 export const api = {
   status: () => req<Status>("/status"),
   wallets: () => req<Wallet[]>("/wallets"),
@@ -79,6 +104,12 @@ export const api = {
   deleteCollection: (address: string) =>
     req<void>(`/collections/${address}`, { method: "DELETE" }),
   seedCollections: () => req<{ loaded: number }>("/collections/seed", { method: "POST" }),
+  settings: () => req<Settings>("/settings"),
+  saveSettings: (body: Partial<Settings> & { max_spend_eth?: string }) =>
+    req<Settings>("/settings", { method: "PUT", body: JSON.stringify(body) }),
+  orders: (limit = 50) => req<MintOrder[]>(`/orders?limit=${limit}`),
+  mint: (body: { collection: string; quantity?: number }) =>
+    req<{ queued: boolean }>("/mint", { method: "POST", body: JSON.stringify(body) }),
 };
 
 export function shortAddr(a: string) {

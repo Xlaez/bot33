@@ -30,6 +30,7 @@ type Watcher struct {
 	alertOnSell  bool
 	pollInterval time.Duration
 	startLag     uint64
+	onMint       func(collection common.Address, walletAddr string, label string, txHash string)
 
 	mu    sync.RWMutex
 	watch map[string]wallet.Record
@@ -56,6 +57,10 @@ func New(
 		startLag:     startLag,
 		watch:        map[string]wallet.Record{},
 	}
+}
+
+func (w *Watcher) SetOnMint(fn func(collection common.Address, walletAddr string, label string, txHash string)) {
+	w.onMint = fn
 }
 
 func (w *Watcher) ReloadWatchSet(ctx context.Context) error {
@@ -321,6 +326,10 @@ func (w *Watcher) handleLogs(ctx context.Context, logs []types.Log) error {
 			}); err != nil {
 				w.log.Error("telegram send failed", "err", err, "tx", ev.TxHash.Hex())
 			}
+		}
+
+		if action == classify.ActionMint && w.onMint != nil {
+			w.onMint(ev.Collection, matched, rec.Label, ev.TxHash.Hex())
 		}
 	}
 	return nil

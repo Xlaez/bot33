@@ -8,11 +8,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/xlaez/bot33/internal/alert"
 	"github.com/xlaez/bot33/internal/chain"
 	"github.com/xlaez/bot33/internal/config"
 	"github.com/xlaez/bot33/internal/discover"
 	"github.com/xlaez/bot33/internal/enrich"
+	"github.com/xlaez/bot33/internal/execute"
 	"github.com/xlaez/bot33/internal/ingest"
 	"github.com/xlaez/bot33/internal/store"
 )
@@ -66,14 +68,40 @@ func main() {
 
 	tg := alert.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID)
 	en := enrich.New(client.HTTP)
+	engine, err := execute.New(client.HTTP, st, log, tg, cfg.ExecutorPrivateKey, cfg.ChainID)
+	if err != nil {
+		log.Error("executor", "err", err)
+		os.Exit(1)
+	}
 	watcher := ingest.New(client.HTTP, st, en, tg, log, cfg.AlertOnSell, cfg.LogPollInterval, cfg.StartBlockLag)
+	watcher.SetOnMint(func(collection common.Address, walletAddr, label, txHash string) {
+		settings, err := st.GetSettings(ctx)
+		if err != nil || !settings.AutoCopyMint {
+			return
+		}
+		log.Info("copy-mint signal", "collection", collection.Hex(), "wallet", walletAddr, "tx", txHash)
+		engine.Enqueue(execute.Job{
+			Source:     "copy",
+			Collection: collection,
+			Quantity:   settings.MintQuantity,
+			SignalTx:   txHash,
+			Label:      label,
+		})
+	})
 	scorer := discover.New(st, log, cfg.DiscoveryMinScore, cfg.DiscoveryMinTrades, cfg.DiscoveryInterval)
 
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
 	go func() { errCh <- watcher.Run(ctx) }()
 	go func() { errCh <- scorer.Run(ctx) }()
+	go func() { errCh <- engine.Run(ctx) }()
 
-	log.Info("watcher started", "chain_id", cfg.ChainID, "telegram", tg.Enabled(), "poll", cfg.LogPollInterval.String())
+	log.Info("watcher started",
+		"chain_id", cfg.ChainID,
+		"telegram", tg.Enabled(),
+		"poll", cfg.LogPollInterval.String(),
+		"executor", engine.HasSigner(),
+		"signer", engine.SignerAddress(),
+	)
 	select {
 	case <-ctx.Done():
 		log.Info("shutting down")

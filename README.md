@@ -1,49 +1,30 @@
-# bot33 — Robinhood Chain NFT smart-wallet watcher
+# bot33 — Robinhood Chain NFT smart-wallet watcher + mint execution
 
-Go watcher that alerts on Telegram when curated or auto-discovered smart wallets mint/buy NFTs on Robinhood Chain (`4663`), plus a minimal ops UI.
-
-## Stack
-
-- Go + Fiber (API + static UI)
-- React (Vite) console at `/`
-- `go-ethereum` log polling
-- PostgreSQL
-- Telegram alerts
+Watch curated/discovered wallets on Robinhood Chain (`4663`), alert via Telegram, and optionally copy/manual SeaDrop **public** mints with a UI spend cap.
 
 ## Quick start
 
 ```bash
 cp .env.example .env
-# fill TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+# TELEGRAM_* and optional EXECUTOR_PRIVATE_KEY
 
 docker compose up -d postgres
 make web-build
-go run ./cmd/api
-go run ./cmd/watcher
+go run ./cmd/api        # UI http://127.0.0.1:8080
+go run ./cmd/watcher    # from repo root
 ```
 
-Open **http://127.0.0.1:8080**
+## Execute tab
 
-Dev UI with hot reload:
+- **Max spend / NFT** — blocks any mint whose SeaDrop value exceeds the cap
+- **Auto-copy** — when a watched wallet *mints*, queue the same collection
+- **Dry-run (default)** vs **LIVE** — live needs `EXECUTOR_PRIVATE_KEY` + toggle
+- **Manual mint** — paste collection address and queue
 
-```bash
-go run ./cmd/api      # :8080
-cd web && npm run dev # :5173 proxies /api
-```
+Orders appear under Execute with status (`dry_run_ok`, `capped`, `rejected`, `broadcast`, …).
 
-### UI
-- **Wallets** — list, add, pause/resume, remove, reload seed
-- **NFT activity** — mint/buy/sell feed from watched wallets
-- **Collections** — manage known NFT contracts
+## Safety
 
-### API
-- `GET /api/status` · `GET /api/wallets` · `POST /api/wallets`
-- `PATCH|DELETE /api/wallets/:address`
-- `GET /api/trades` · `GET|POST /api/collections`
-
-## Tests
-
-```bash
-go test ./...
-cd web && npm run build
-```
+- Default is dry-run (`execute_live=false`)
+- Private key never exposed in the UI — only in `.env`
+- Only SeaDrop **public** mint path (no WL/FCFS OpenSea signatures)

@@ -7,10 +7,10 @@ import {
   explorerTx,
   shortAddr,
 } from "./api";
-import type { Collection, Status, Trade, Wallet } from "./api";
+import type { Collection, MintOrder, Settings, Status, Trade, Wallet } from "./api";
 import "./index.css";
 
-type Tab = "wallets" | "activity" | "collections";
+type Tab = "wallets" | "activity" | "collections" | "execute";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("wallets");
@@ -18,6 +18,8 @@ export default function App() {
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [orders, setOrders] = useState<MintOrder[]>([]);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
@@ -27,6 +29,9 @@ export default function App() {
   const [walletLabel, setWalletLabel] = useState("");
   const [colAddr, setColAddr] = useState("");
   const [colName, setColName] = useState("");
+  const [maxSpendEth, setMaxSpendEth] = useState("0.05");
+  const [mintCollection, setMintCollection] = useState("");
+  const [mintQty, setMintQty] = useState("1");
 
   const notify = (msg: string) => {
     setToast(msg);
@@ -36,16 +41,21 @@ export default function App() {
   const refresh = useCallback(async () => {
     setError("");
     try {
-      const [s, w, t, c] = await Promise.all([
+      const [s, w, t, c, set, o] = await Promise.all([
         api.status(),
         api.wallets(),
         api.trades(120),
         api.collections(),
+        api.settings(),
+        api.orders(40),
       ]);
       setStatus(s);
       setWallets(w);
       setTrades(t);
       setCollections(c);
+      setSettings(set);
+      setOrders(o);
+      if (set.max_spend_eth) setMaxSpendEth(set.max_spend_eth);
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed to load");
     }
@@ -53,7 +63,7 @@ export default function App() {
 
   useEffect(() => {
     void refresh();
-    const id = window.setInterval(() => void refresh(), 12000);
+    const id = window.setInterval(() => void refresh(), 10000);
     return () => window.clearInterval(id);
   }, [refresh]);
 
@@ -96,7 +106,7 @@ export default function App() {
       await api.addWallet({ address: walletAddr.trim(), label: walletLabel.trim() });
       setWalletAddr("");
       setWalletLabel("");
-      notify("Wallet added to watch set");
+      notify("Wallet added");
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "add failed");
@@ -122,6 +132,39 @@ export default function App() {
     }
   }
 
+  async function saveSettings(patch: Record<string, unknown>) {
+    setBusy(true);
+    setError("");
+    try {
+      const next = await api.saveSettings(patch);
+      setSettings(next);
+      if (next.max_spend_eth) setMaxSpendEth(next.max_spend_eth);
+      notify("Settings saved");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onManualMint(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api.mint({
+        collection: mintCollection.trim(),
+        quantity: Number(mintQty) || 1,
+      });
+      notify("Mint queued");
+      setTimeout(() => void refresh(), 1200);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "mint failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="app">
       <header className="hero">
@@ -129,8 +172,8 @@ export default function App() {
           bot<span>33</span>
         </h1>
         <p className="tagline">
-          Robinhood Chain NFT smart-wallet watch. Track curated and discovered wallets,
-          scan mint/buy flow, manage collections.
+          Robinhood NFT smart-wallet watch + SeaDrop public mint execution. Cap spend per mint in
+          Execute.
         </p>
         <div className="stats">
           <div className="stat">
@@ -138,16 +181,16 @@ export default function App() {
             <b>{status?.wallets_watching ?? "—"}</b>
           </div>
           <div className="stat">
-            <span>Wallets</span>
-            <b>{status?.wallets_total ?? "—"}</b>
-          </div>
-          <div className="stat">
             <span>NFT events</span>
             <b>{status?.trades_total ?? "—"}</b>
           </div>
           <div className="stat">
-            <span>Cursor</span>
-            <b>{status?.cursor_block ? status.cursor_block.toLocaleString() : "—"}</b>
+            <span>Max / NFT</span>
+            <b>{settings?.max_spend_eth ?? "—"} Ξ</b>
+          </div>
+          <div className="stat">
+            <span>Mode</span>
+            <b>{settings?.execute_live ? "LIVE" : "DRY"}</b>
           </div>
         </div>
       </header>
@@ -158,6 +201,7 @@ export default function App() {
             ["wallets", "Wallets"],
             ["activity", "NFT activity"],
             ["collections", "Collections"],
+            ["execute", "Execute"],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -183,6 +227,136 @@ export default function App() {
         />
         {error ? <p className="error">{error}</p> : null}
       </div>
+
+      {tab === "execute" ? (
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <h2>Execution</h2>
+              <p>
+                Max spend blocks any mint above the cap. Live mode needs{" "}
+                <code>EXECUTOR_PRIVATE_KEY</code> in `.env`.
+              </p>
+            </div>
+          </div>
+
+          <div className="form" style={{ gridTemplateColumns: "1fr 1fr auto" }}>
+            <input
+              className="input"
+              value={maxSpendEth}
+              onChange={(e) => setMaxSpendEth(e.target.value)}
+              placeholder="Max ETH per mint"
+              style={{ fontFamily: "var(--font-display)" }}
+            />
+            <div className="meta" style={{ alignItems: "center" }}>
+              <span className="chip">{settings?.has_signer ? `signer ${shortAddr(settings.signer_address || "")}` : "no signer"}</span>
+              <span className={`chip ${settings?.execute_live ? "sell" : "mint"}`}>
+                {settings?.execute_live ? "live" : "dry-run"}
+              </span>
+              <span className={`chip ${settings?.auto_copy_mint ? "curated" : ""}`}>
+                {settings?.auto_copy_mint ? "auto-copy on" : "auto-copy off"}
+              </span>
+            </div>
+            <button
+              className="btn btn-primary"
+              type="button"
+              disabled={busy}
+              onClick={() => void saveSettings({ max_spend_eth: maxSpendEth })}
+            >
+              Save max spend
+            </button>
+          </div>
+
+          <div className="toolbar" style={{ marginBottom: "1rem" }}>
+            <button
+              className="btn btn-ghost"
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                void saveSettings({ auto_copy_mint: !settings?.auto_copy_mint })
+              }
+            >
+              {settings?.auto_copy_mint ? "Disable auto-copy" : "Enable auto-copy"}
+            </button>
+            <button
+              className="btn btn-ghost"
+              type="button"
+              disabled={busy || !settings?.has_signer}
+              onClick={() => void saveSettings({ execute_live: !settings?.execute_live })}
+            >
+              {settings?.execute_live ? "Switch to dry-run" : "Switch to LIVE"}
+            </button>
+            <input
+              className="input"
+              style={{ maxWidth: "6rem" }}
+              value={String(settings?.mint_quantity ?? 1)}
+              onChange={(e) => {
+                const n = Number(e.target.value) || 1;
+                setSettings((s) => (s ? { ...s, mint_quantity: n } : s));
+              }}
+              onBlur={() =>
+                void saveSettings({ mint_quantity: settings?.mint_quantity ?? 1 })
+              }
+              title="Default mint quantity"
+            />
+          </div>
+
+          <h2 style={{ fontSize: "1.05rem", margin: "0 0 0.75rem" }}>Manual mint</h2>
+          <form className="form" onSubmit={onManualMint}>
+            <input
+              className="input"
+              required
+              placeholder="0x collection address"
+              value={mintCollection}
+              onChange={(e) => setMintCollection(e.target.value)}
+            />
+            <input
+              className="input"
+              value={mintQty}
+              onChange={(e) => setMintQty(e.target.value)}
+              placeholder="Qty"
+            />
+            <button className="btn btn-primary" type="submit" disabled={busy}>
+              Queue mint
+            </button>
+          </form>
+
+          <h2 style={{ fontSize: "1.05rem", margin: "1.2rem 0 0.75rem" }}>Orders</h2>
+          <div className="list">
+            {orders.length === 0 ? (
+              <div className="empty">No mint orders yet.</div>
+            ) : (
+              orders.map((o) => (
+                <article className="row" key={o.id}>
+                  <div className="row-main">
+                    <div className="row-title">
+                      <span className={`chip ${o.dry_run ? "mint" : "sell"}`}>
+                        {o.dry_run ? "dry" : "live"}
+                      </span>
+                      <span className="chip">{o.source}</span>
+                      <span className="label">{o.status}</span>
+                      <span className="chip">x{o.quantity}</span>
+                    </div>
+                    <a className="addr" href={explorerAddr(o.collection)} target="_blank" rel="noreferrer">
+                      {o.collection}
+                    </a>
+                    <div className="meta">
+                      <span className="chip">{o.value_wei} wei</span>
+                      {o.tx_hash ? (
+                        <a className="chip" href={explorerTx(o.tx_hash)} target="_blank" rel="noreferrer">
+                          tx {shortAddr(o.tx_hash)}
+                        </a>
+                      ) : null}
+                      {o.error ? <span className="chip blocked">{o.error.slice(0, 80)}</span> : null}
+                      <span className="chip">{new Date(o.created_at).toLocaleString()}</span>
+                    </div>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </section>
+      ) : null}
 
       {tab === "wallets" ? (
         <section className="panel">
@@ -213,7 +387,6 @@ export default function App() {
               </button>
             </div>
           </div>
-
           <form className="form" onSubmit={onAddWallet}>
             <input
               className="input"
@@ -233,10 +406,9 @@ export default function App() {
               Add wallet
             </button>
           </form>
-
           <div className="list">
             {filteredWallets.length === 0 ? (
-              <div className="empty">No wallets yet. Add one or reload the seed.</div>
+              <div className="empty">No wallets yet.</div>
             ) : (
               filteredWallets.map((w) => (
                 <article className="row" key={w.address}>
@@ -245,18 +417,10 @@ export default function App() {
                       <span className="label">{w.label || "unnamed"}</span>
                       <span className={`chip ${w.source}`}>{w.source}</span>
                       {!w.active ? <span className="chip blocked">paused</span> : null}
-                      {w.score > 0 ? <span className="chip">score {Math.round(w.score)}</span> : null}
                     </div>
                     <a className="addr" href={explorerAddr(w.address)} target="_blank" rel="noreferrer">
                       {w.address}
                     </a>
-                    <div className="meta">
-                      {(w.collections ?? []).slice(0, 4).map((c) => (
-                        <span className="chip" key={c}>
-                          {c}
-                        </span>
-                      ))}
-                    </div>
                   </div>
                   <div className="actions">
                     <button
@@ -264,7 +428,6 @@ export default function App() {
                       type="button"
                       onClick={async () => {
                         await api.patchWallet(w.address, { active: !w.active });
-                        notify(w.active ? "Paused" : "Resumed");
                         await refresh();
                       }}
                     >
@@ -274,9 +437,7 @@ export default function App() {
                       className="btn btn-danger"
                       type="button"
                       onClick={async () => {
-                        if (!window.confirm(`Remove ${shortAddr(w.address)}?`)) return;
                         await api.deleteWallet(w.address);
-                        notify("Removed");
                         await refresh();
                       }}
                     >
@@ -300,9 +461,7 @@ export default function App() {
           </div>
           <div className="list">
             {filteredTrades.length === 0 ? (
-              <div className="empty">
-                No events yet. Keep the watcher running — activity appears as smart wallets move.
-              </div>
+              <div className="empty">No events yet.</div>
             ) : (
               filteredTrades.map((t) => (
                 <article className="row" key={`${t.tx_hash}-${t.id}`}>
@@ -312,25 +471,13 @@ export default function App() {
                       <span className="label">#{t.token_id}</span>
                     </div>
                     <div className="addr">
-                      wallet{" "}
                       <a href={explorerAddr(t.wallet)} target="_blank" rel="noreferrer">
                         {shortAddr(t.wallet)}
                       </a>
                       {" · "}
-                      <a
-                        href={explorerToken(t.collection, t.token_id)}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
+                      <a href={explorerToken(t.collection, t.token_id)} target="_blank" rel="noreferrer">
                         {shortAddr(t.collection)}
                       </a>
-                    </div>
-                    <div className="meta">
-                      <span className="chip">block {t.block_number}</span>
-                      <a className="chip" href={explorerTx(t.tx_hash)} target="_blank" rel="noreferrer">
-                        tx {shortAddr(t.tx_hash)}
-                      </a>
-                      <span className="chip">{new Date(t.created_at).toLocaleString()}</span>
                     </div>
                   </div>
                 </article>
@@ -345,7 +492,7 @@ export default function App() {
           <div className="panel-head">
             <div>
               <h2>Collections</h2>
-              <p>Known Robinhood NFT contracts for research and context.</p>
+              <p>Known Robinhood NFT contracts.</p>
             </div>
             <div className="toolbar">
               <button
@@ -356,7 +503,7 @@ export default function App() {
                   setBusy(true);
                   try {
                     const r = await api.seedCollections();
-                    notify(`Loaded ${r.loaded} collections`);
+                    notify(`Loaded ${r.loaded}`);
                     await refresh();
                   } catch (err) {
                     setError(err instanceof Error ? err.message : "seed failed");
@@ -369,7 +516,6 @@ export default function App() {
               </button>
             </div>
           </div>
-
           <form className="form" onSubmit={onAddCollection}>
             <input
               className="input"
@@ -389,37 +535,41 @@ export default function App() {
               Add collection
             </button>
           </form>
-
           <div className="list">
-            {filteredCollections.length === 0 ? (
-              <div className="empty">No collections yet. Load defaults or add one.</div>
-            ) : (
-              filteredCollections.map((c) => (
-                <article className="row" key={c.address}>
-                  <div className="row-main">
-                    <div className="row-title">
-                      <span className="label">{c.name || "unnamed collection"}</span>
-                    </div>
-                    <a className="addr" href={explorerAddr(c.address)} target="_blank" rel="noreferrer">
-                      {c.address}
-                    </a>
+            {filteredCollections.map((c) => (
+              <article className="row" key={c.address}>
+                <div className="row-main">
+                  <div className="row-title">
+                    <span className="label">{c.name || "unnamed"}</span>
                   </div>
-                  <div className="actions">
-                    <button
-                      className="btn btn-danger"
-                      type="button"
-                      onClick={async () => {
-                        await api.deleteCollection(c.address);
-                        notify("Collection removed");
-                        await refresh();
-                      }}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </article>
-              ))
-            )}
+                  <a className="addr" href={explorerAddr(c.address)} target="_blank" rel="noreferrer">
+                    {c.address}
+                  </a>
+                </div>
+                <div className="actions">
+                  <button
+                    className="btn btn-ghost"
+                    type="button"
+                    onClick={() => {
+                      setTab("execute");
+                      setMintCollection(c.address);
+                    }}
+                  >
+                    Mint
+                  </button>
+                  <button
+                    className="btn btn-danger"
+                    type="button"
+                    onClick={async () => {
+                      await api.deleteCollection(c.address);
+                      await refresh();
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              </article>
+            ))}
           </div>
         </section>
       ) : null}

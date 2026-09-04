@@ -2,17 +2,23 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"math/big"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/xlaez/bot33/internal/alert"
+	"github.com/xlaez/bot33/internal/chain"
 	"github.com/xlaez/bot33/internal/config"
+	"github.com/xlaez/bot33/internal/execute"
 	"github.com/xlaez/bot33/internal/store"
 	"github.com/xlaez/bot33/internal/wallet"
 )
@@ -189,11 +195,129 @@ func main() {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 	api.Post("/collections/seed", func(c *fiber.Ctx) error {
-		n, err := st.LoadCollectionsFile(c.Context(), "configs/collections.yaml")
+		path := "configs/collections.yaml"
+		if cfg.RootDir != "" {
+			path = filepath.Join(cfg.RootDir, path)
+		}
+		n, err := st.LoadCollectionsFile(c.Context(), path)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
 		return c.JSON(fiber.Map{"loaded": n})
+	})
+
+	rpcCtx, rpcCancel := context.WithCancel(ctx)
+	defer rpcCancel()
+	client, err := chain.Dial(rpcCtx, cfg.RHHTTPURL, cfg.RHWSURL, cfg.ChainID)
+	if err != nil {
+		log.Warn("rpc unavailable for mint API", "err", err)
+	}
+	var engine *execute.Engine
+	if client != nil {
+		defer client.Close()
+		tg := alert.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID)
+		engine, err = execute.New(client.HTTP, st, log, tg, cfg.ExecutorPrivateKey, cfg.ChainID)
+		if err != nil {
+			log.Error("executor", "err", err)
+			os.Exit(1)
+		}
+		go func() {
+			_ = engine.Run(ctx)
+		}()
+	}
+
+	api.Get("/settings", func(c *fiber.Ctx) error {
+		if engine == nil {
+			s, err := st.GetSettings(c.Context())
+			if err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			}
+			return c.JSON(s)
+		}
+		view, err := engine.SettingsView(c.Context())
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(view)
+	})
+	api.Put("/settings", func(c *fiber.Ctx) error {
+		var body struct {
+			MaxSpendETH  *string `json:"max_spend_eth"`
+			MaxSpendWei  *string `json:"max_spend_wei"`
+			ExecuteLive  *bool   `json:"execute_live"`
+			AutoCopyMint *bool   `json:"auto_copy_mint"`
+			MintQuantity *uint64 `json:"mint_quantity"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		cur, err := st.GetSettings(c.Context())
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		if body.MaxSpendWei != nil && strings.TrimSpace(*body.MaxSpendWei) != "" {
+			cur.MaxSpendWei = strings.TrimSpace(*body.MaxSpendWei)
+		}
+		if body.MaxSpendETH != nil && strings.TrimSpace(*body.MaxSpendETH) != "" {
+			wei, err := ethToWei(strings.TrimSpace(*body.MaxSpendETH))
+			if err != nil {
+				return fiber.NewError(fiber.StatusBadRequest, err.Error())
+			}
+			cur.MaxSpendWei = wei
+		}
+		if body.ExecuteLive != nil {
+			cur.ExecuteLive = *body.ExecuteLive
+		}
+		if body.AutoCopyMint != nil {
+			cur.AutoCopyMint = *body.AutoCopyMint
+		}
+		if body.MintQuantity != nil {
+			cur.MintQuantity = *body.MintQuantity
+		}
+		if err := st.UpdateSettings(c.Context(), cur); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		if engine != nil {
+			view, err := engine.SettingsView(c.Context())
+			if err == nil {
+				return c.JSON(view)
+			}
+		}
+		return c.JSON(cur)
+	})
+
+	api.Get("/orders", func(c *fiber.Ctx) error {
+		rows, err := st.ListOrders(c.Context(), c.QueryInt("limit", 50))
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(rows)
+	})
+	api.Post("/mint", func(c *fiber.Ctx) error {
+		if engine == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "rpc/executor unavailable")
+		}
+		var body struct {
+			Collection string `json:"collection"`
+			Quantity   uint64 `json:"quantity"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		addr := wallet.NormalizeAddress(body.Collection)
+		if addr == "" || !strings.HasPrefix(addr, "0x") || len(addr) != 42 {
+			return fiber.NewError(fiber.StatusBadRequest, "valid collection address required")
+		}
+		if body.Quantity == 0 {
+			body.Quantity = 1
+		}
+		engine.Enqueue(execute.Job{
+			Source:     "manual",
+			Collection: common.HexToAddress(addr),
+			Quantity:   body.Quantity,
+			Label:      "manual",
+		})
+		return c.JSON(fiber.Map{"queued": true, "collection": addr, "quantity": body.Quantity})
 	})
 
 	webDir := resolveWebDir()
@@ -202,6 +326,9 @@ func main() {
 			Index: "index.html",
 		})
 		app.Get("/*", func(c *fiber.Ctx) error {
+			if strings.HasPrefix(c.Path(), "/api") {
+				return fiber.ErrNotFound
+			}
 			return c.SendFile(filepath.Join(webDir, "index.html"))
 		})
 	}
@@ -216,6 +343,20 @@ func main() {
 		log.Error("api stopped", "err", err)
 		os.Exit(1)
 	}
+}
+
+func ethToWei(eth string) (string, error) {
+	f, _, err := big.ParseFloat(eth, 10, 256, big.ToNearestEven)
+	if err != nil {
+		return "", fmt.Errorf("invalid eth amount")
+	}
+	if f.Sign() < 0 {
+		return "", fmt.Errorf("max spend must be >= 0")
+	}
+	scale := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
+	weiF := new(big.Float).Mul(f, scale)
+	wei, _ := weiF.Int(nil)
+	return wei.String(), nil
 }
 
 func apiError(c *fiber.Ctx, err error) error {
