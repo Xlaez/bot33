@@ -40,7 +40,7 @@ func New(st *store.Store, log *slog.Logger, opts Options) *Scorer {
 		opts.MinTrades = 5
 	}
 	if opts.Interval <= 0 {
-		opts.Interval = time.Hour
+		opts.Interval = 5 * time.Minute
 	}
 	return &Scorer{store: st, log: log, opts: opts}
 }
@@ -188,6 +188,7 @@ func (s *Scorer) tick(ctx context.Context) error {
 	s.log.Info("discovery tick complete",
 		"window", s.opts.Window.String(),
 		"top_n", s.opts.TopN,
+		"wallets_scored", len(stats),
 		"candidates", len(candidates),
 		"promoted_or_updated", promoted,
 		"demoted", demoted,

@@ -66,7 +66,7 @@ func Load() (Config, error) {
 		TelegramChatID:          os.Getenv("TELEGRAM_CHAT_ID"),
 		AlertOnSell:             getenvBool("ALERT_ON_SELL", false),
 		WalletsSeedPath:         seedPath,
-		DiscoveryInterval:       getenvDuration("DISCOVERY_INTERVAL", 1*time.Hour),
+		DiscoveryInterval:       getenvDuration("DISCOVERY_INTERVAL", 5*time.Minute),
 		DiscoveryMinScore:       getenvFloat("DISCOVERY_MIN_SCORE", 70),
 		DiscoveryMinTrades:      int(getenvInt64("DISCOVERY_MIN_TRADES", 5)),
 		DiscoveryTopN:           int(getenvInt64("DISCOVERY_TOP_N", 40)),
