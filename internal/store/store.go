@@ -116,6 +116,29 @@ CREATE TABLE IF NOT EXISTS bot_settings (
 
 INSERT INTO bot_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 
+ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meme_max_spend_wei NUMERIC NOT NULL DEFAULT 20000000000000000;
+ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meme_execute_live BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meme_auto_buy BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meme_slippage_bps INTEGER NOT NULL DEFAULT 1000;
+
+CREATE TABLE IF NOT EXISTS meme_orders (
+  id BIGSERIAL PRIMARY KEY,
+  source TEXT NOT NULL,
+  token TEXT NOT NULL,
+  pool_address TEXT NOT NULL DEFAULT '',
+  dex TEXT NOT NULL DEFAULT '',
+  spend_wei NUMERIC NOT NULL DEFAULT 0,
+  min_out_wei NUMERIC NOT NULL DEFAULT 0,
+  tx_hash TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  error TEXT NOT NULL DEFAULT '',
+  dry_run BOOLEAN NOT NULL DEFAULT TRUE,
+  signal_tx TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_meme_orders_created ON meme_orders(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_meme_orders_token ON meme_orders(token);
+
 CREATE TABLE IF NOT EXISTS mint_orders (
   id BIGSERIAL PRIMARY KEY,
   source TEXT NOT NULL,
@@ -703,10 +726,14 @@ func (s *Store) LoadSeedFile(ctx context.Context, path string) (int, error) {
 }
 
 type BotSettings struct {
-	MaxSpendWei  string `json:"max_spend_wei"`
-	ExecuteLive  bool   `json:"execute_live"`
-	AutoCopyMint bool   `json:"auto_copy_mint"`
-	MintQuantity uint64 `json:"mint_quantity"`
+	MaxSpendWei       string `json:"max_spend_wei"`
+	ExecuteLive       bool   `json:"execute_live"`
+	AutoCopyMint      bool   `json:"auto_copy_mint"`
+	MintQuantity      uint64 `json:"mint_quantity"`
+	MemeMaxSpendWei   string `json:"meme_max_spend_wei"`
+	MemeExecuteLive   bool   `json:"meme_execute_live"`
+	MemeAutoBuy       bool   `json:"meme_auto_buy"`
+	MemeSlippageBps   int    `json:"meme_slippage_bps"`
 }
 
 type MintOrder struct {
@@ -724,13 +751,32 @@ type MintOrder struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+type MemeOrder struct {
+	ID          int64     `json:"id"`
+	Source      string    `json:"source"`
+	Token       string    `json:"token"`
+	PoolAddress string    `json:"pool_address"`
+	Dex         string    `json:"dex"`
+	SpendWei    string    `json:"spend_wei"`
+	MinOutWei   string    `json:"min_out_wei"`
+	TxHash      string    `json:"tx_hash"`
+	Status      string    `json:"status"`
+	Error       string    `json:"error"`
+	DryRun      bool      `json:"dry_run"`
+	SignalTx    string    `json:"signal_tx"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 func (s *Store) GetSettings(ctx context.Context) (BotSettings, error) {
 	var st BotSettings
 	var qty int64
+	var slip int64
 	err := s.db.QueryRowContext(ctx, `
-SELECT max_spend_wei::text, execute_live, auto_copy_mint, mint_quantity
+SELECT max_spend_wei::text, execute_live, auto_copy_mint, mint_quantity,
+       meme_max_spend_wei::text, meme_execute_live, meme_auto_buy, meme_slippage_bps
 FROM bot_settings WHERE id=1
-`).Scan(&st.MaxSpendWei, &st.ExecuteLive, &st.AutoCopyMint, &qty)
+`).Scan(&st.MaxSpendWei, &st.ExecuteLive, &st.AutoCopyMint, &qty,
+		&st.MemeMaxSpendWei, &st.MemeExecuteLive, &st.MemeAutoBuy, &slip)
 	if err != nil {
 		return st, err
 	}
@@ -738,6 +784,13 @@ FROM bot_settings WHERE id=1
 		qty = 1
 	}
 	st.MintQuantity = uint64(qty)
+	if slip <= 0 {
+		slip = 1000
+	}
+	st.MemeSlippageBps = int(slip)
+	if st.MemeMaxSpendWei == "" {
+		st.MemeMaxSpendWei = "20000000000000000"
+	}
 	return st, nil
 }
 
@@ -748,16 +801,74 @@ func (s *Store) UpdateSettings(ctx context.Context, st BotSettings) error {
 	if st.MaxSpendWei == "" {
 		st.MaxSpendWei = "50000000000000000"
 	}
+	if st.MemeMaxSpendWei == "" {
+		st.MemeMaxSpendWei = "20000000000000000"
+	}
+	if st.MemeSlippageBps <= 0 {
+		st.MemeSlippageBps = 1000
+	}
 	_, err := s.db.ExecContext(ctx, `
 UPDATE bot_settings SET
   max_spend_wei=$1,
   execute_live=$2,
   auto_copy_mint=$3,
   mint_quantity=$4,
+  meme_max_spend_wei=$5,
+  meme_execute_live=$6,
+  meme_auto_buy=$7,
+  meme_slippage_bps=$8,
   updated_at=NOW()
 WHERE id=1
-`, st.MaxSpendWei, st.ExecuteLive, st.AutoCopyMint, st.MintQuantity)
+`, st.MaxSpendWei, st.ExecuteLive, st.AutoCopyMint, st.MintQuantity,
+		st.MemeMaxSpendWei, st.MemeExecuteLive, st.MemeAutoBuy, st.MemeSlippageBps)
 	return err
+}
+
+func (s *Store) InsertMemeOrder(ctx context.Context, o MemeOrder) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO meme_orders(source, token, pool_address, dex, spend_wei, min_out_wei, tx_hash, status, error, dry_run, signal_tx)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+`, o.Source, wallet.NormalizeAddress(o.Token), wallet.NormalizeAddress(o.PoolAddress), o.Dex,
+		nullWei(o.SpendWei), nullWei(o.MinOutWei), o.TxHash, o.Status, o.Error, o.DryRun, o.SignalTx)
+	return err
+}
+
+func (s *Store) ListMemeOrders(ctx context.Context, limit int) ([]MemeOrder, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, source, token, pool_address, dex, spend_wei::text, min_out_wei::text,
+       tx_hash, status, error, dry_run, signal_tx, created_at
+FROM meme_orders ORDER BY created_at DESC LIMIT $1
+`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MemeOrder
+	for rows.Next() {
+		var o MemeOrder
+		if err := rows.Scan(&o.ID, &o.Source, &o.Token, &o.PoolAddress, &o.Dex, &o.SpendWei, &o.MinOutWei,
+			&o.TxHash, &o.Status, &o.Error, &o.DryRun, &o.SignalTx, &o.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	if out == nil {
+		out = []MemeOrder{}
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) HasLiveMemeBuy(ctx context.Context, token string) (bool, error) {
+	token = wallet.NormalizeAddress(token)
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM meme_orders
+WHERE token = $1 AND dry_run = FALSE AND status IN ('broadcast', 'confirmed')
+`, token).Scan(&n)
+	return n > 0, err
 }
 
 func (s *Store) InsertOrder(ctx context.Context, o MintOrder) error {

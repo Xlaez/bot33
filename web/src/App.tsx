@@ -7,7 +7,7 @@ import {
   explorerTx,
   shortAddr,
 } from "./api";
-import type { Collection, MemeStats, MemeToken, MintOrder, Settings, Status, Trade, Wallet } from "./api";
+import type { Collection, MemeOrder, MemeStats, MemeToken, MintOrder, Settings, Status, Trade, Wallet } from "./api";
 import "./index.css";
 
 type Tab = "wallets" | "activity" | "collections" | "memes" | "execute";
@@ -22,6 +22,7 @@ export default function App() {
   const [orders, setOrders] = useState<MintOrder[]>([]);
   const [memes, setMemes] = useState<MemeToken[]>([]);
   const [memeStats, setMemeStats] = useState<MemeStats | null>(null);
+  const [memeOrders, setMemeOrders] = useState<MemeOrder[]>([]);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
@@ -32,8 +33,10 @@ export default function App() {
   const [colAddr, setColAddr] = useState("");
   const [colName, setColName] = useState("");
   const [maxSpendEth, setMaxSpendEth] = useState("0.05");
+  const [memeMaxSpendEth, setMemeMaxSpendEth] = useState("0.02");
   const [mintCollection, setMintCollection] = useState("");
   const [mintQty, setMintQty] = useState("1");
+  const [manualMemeToken, setManualMemeToken] = useState("");
 
   const notify = (msg: string) => {
     setToast(msg);
@@ -43,7 +46,7 @@ export default function App() {
   const refresh = useCallback(async () => {
     setError("");
     try {
-      const [s, w, t, c, set, o, m, ms] = await Promise.all([
+      const [s, w, t, c, set, o, m, ms, mo] = await Promise.all([
         api.status(),
         api.wallets(),
         api.trades(120),
@@ -52,6 +55,7 @@ export default function App() {
         api.orders(40),
         api.memes(120),
         api.memeStats(),
+        api.memeOrders(40),
       ]);
       setStatus(s);
       setWallets(w);
@@ -61,7 +65,9 @@ export default function App() {
       setOrders(o);
       setMemes(m);
       setMemeStats(ms);
+      setMemeOrders(mo);
       if (set.max_spend_eth) setMaxSpendEth(set.max_spend_eth);
+      if (set.meme_max_spend_eth) setMemeMaxSpendEth(set.meme_max_spend_eth);
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed to load");
     }
@@ -157,6 +163,7 @@ export default function App() {
       const next = await api.saveSettings(patch);
       setSettings(next);
       if (next.max_spend_eth) setMaxSpendEth(next.max_spend_eth);
+      if (next.meme_max_spend_eth) setMemeMaxSpendEth(next.meme_max_spend_eth);
       notify("Settings saved");
     } catch (err) {
       setError(err instanceof Error ? err.message : "save failed");
@@ -183,6 +190,36 @@ export default function App() {
     }
   }
 
+  async function onManualMemeBuy(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api.memeBuy(manualMemeToken.trim());
+      notify("Meme buy queued");
+      setManualMemeToken("");
+      setTimeout(() => void refresh(), 1200);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "buy failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function queueMemeBuy(token: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await api.memeBuy(token);
+      notify("Meme buy queued");
+      setTimeout(() => void refresh(), 1200);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "buy failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="app">
       <header className="hero">
@@ -190,8 +227,8 @@ export default function App() {
           bot<span>33</span>
         </h1>
         <p className="tagline">
-          Robinhood NFT + memecoin watch. Cap NFT mint spend in Execute. Memes alert only with
-          locked LP.
+          Robinhood NFT + memecoin watch. Cap NFT mint spend in Execute; meme buys on Memecoins.
+          Memes alert/buy only with locked LP.
         </p>
         <div className="stats">
           <div className="stat">
@@ -512,11 +549,89 @@ export default function App() {
             <div>
               <h2>Memecoins</h2>
               <p>
-                Uniswap V2/V3/V4 launches ≤30d from first liquidity. Telegram alerts require locked
-                LP + score ≥70 ({memeStats?.alerted ?? 0} alerted).
+                Uniswap V2/V3/V4 launches ≤30d from first liquidity. Telegram alerts + auto-buy
+                require locked LP + score ≥70 ({memeStats?.alerted ?? 0} alerted). Buys use a
+                separate spend cap; default is dry-run.
               </p>
             </div>
           </div>
+
+          <div className="form" style={{ gridTemplateColumns: "1fr 1fr auto" }}>
+            <input
+              className="input"
+              value={memeMaxSpendEth}
+              onChange={(e) => setMemeMaxSpendEth(e.target.value)}
+              placeholder="Max ETH per meme buy"
+              style={{ fontFamily: "var(--font-display)" }}
+            />
+            <div className="meta" style={{ alignItems: "center" }}>
+              <span className={`chip ${settings?.meme_execute_live ? "sell" : "mint"}`}>
+                {settings?.meme_execute_live ? "meme live" : "meme dry-run"}
+              </span>
+              <span className={`chip ${settings?.meme_auto_buy ? "curated" : ""}`}>
+                {settings?.meme_auto_buy ? "auto-buy on" : "auto-buy off"}
+              </span>
+              <span className="chip">slip {(settings?.meme_slippage_bps ?? 1000) / 100}%</span>
+            </div>
+            <button
+              className="btn btn-primary"
+              type="button"
+              disabled={busy}
+              onClick={() => void saveSettings({ meme_max_spend_eth: memeMaxSpendEth })}
+            >
+              Save max spend
+            </button>
+          </div>
+
+          <div className="toolbar" style={{ marginBottom: "1rem" }}>
+            <button
+              className="btn btn-ghost"
+              type="button"
+              disabled={busy}
+              onClick={() => void saveSettings({ meme_auto_buy: !settings?.meme_auto_buy })}
+            >
+              {settings?.meme_auto_buy ? "Disable auto-buy" : "Enable auto-buy"}
+            </button>
+            <button
+              className="btn btn-ghost"
+              type="button"
+              disabled={busy || !settings?.has_signer}
+              onClick={() =>
+                void saveSettings({ meme_execute_live: !settings?.meme_execute_live })
+              }
+            >
+              {settings?.meme_execute_live ? "Switch to dry-run" : "Switch to LIVE"}
+            </button>
+            <input
+              className="input"
+              style={{ maxWidth: "7rem" }}
+              value={String(settings?.meme_slippage_bps ?? 1000)}
+              onChange={(e) => {
+                const n = Number(e.target.value) || 1000;
+                setSettings((s) => (s ? { ...s, meme_slippage_bps: n } : s));
+              }}
+              onBlur={() =>
+                void saveSettings({ meme_slippage_bps: settings?.meme_slippage_bps ?? 1000 })
+              }
+              title="Slippage in basis points (1000 = 10%)"
+            />
+          </div>
+
+          <h2 style={{ fontSize: "1.05rem", margin: "0 0 0.75rem" }}>Manual buy</h2>
+          <form className="form" onSubmit={onManualMemeBuy}>
+            <input
+              className="input"
+              required
+              placeholder="0x token address"
+              value={manualMemeToken}
+              onChange={(e) => setManualMemeToken(e.target.value)}
+            />
+            <button className="btn btn-primary" type="submit" disabled={busy}>
+              Queue buy
+            </button>
+          </form>
+
+          <h2 style={{ fontSize: "1.05rem", margin: "1.2rem 0 0.75rem" }}>Tracked tokens</h2>
           <div className="list">
             {filteredMemes.length === 0 ? (
               <div className="empty">No memecoins tracked yet — start meme-watcher.</div>
@@ -544,11 +659,63 @@ export default function App() {
                     </div>
                     <div className="addr">{(m.flags ?? []).join(", ")}</div>
                   </div>
-                  {m.launch_tx ? (
-                    <a className="btn btn-ghost" href={explorerTx(m.launch_tx)} target="_blank" rel="noreferrer">
-                      Launch tx
+                  <div className="actions">
+                    {m.lp_locked ? (
+                      <button
+                        className="btn btn-ghost"
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void queueMemeBuy(m.address)}
+                      >
+                        Buy
+                      </button>
+                    ) : null}
+                    {m.launch_tx ? (
+                      <a
+                        className="btn btn-ghost"
+                        href={explorerTx(m.launch_tx)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Launch tx
+                      </a>
+                    ) : null}
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+
+          <h2 style={{ fontSize: "1.05rem", margin: "1.2rem 0 0.75rem" }}>Buy orders</h2>
+          <div className="list">
+            {memeOrders.length === 0 ? (
+              <div className="empty">No meme buy orders yet.</div>
+            ) : (
+              memeOrders.map((o) => (
+                <article className="row" key={o.id}>
+                  <div className="row-main">
+                    <div className="row-title">
+                      <span className={`chip ${o.dry_run ? "mint" : "sell"}`}>
+                        {o.dry_run ? "dry" : "live"}
+                      </span>
+                      <span className="chip">{o.source}</span>
+                      <span className="label">{o.status}</span>
+                      {o.dex ? <span className="chip">{o.dex}</span> : null}
+                    </div>
+                    <a className="addr" href={explorerAddr(o.token)} target="_blank" rel="noreferrer">
+                      {o.token}
                     </a>
-                  ) : null}
+                    <div className="meta">
+                      <span className="chip">{o.spend_wei} wei</span>
+                      {o.tx_hash ? (
+                        <a className="chip" href={explorerTx(o.tx_hash)} target="_blank" rel="noreferrer">
+                          tx {shortAddr(o.tx_hash)}
+                        </a>
+                      ) : null}
+                      {o.error ? <span className="chip blocked">{o.error.slice(0, 80)}</span> : null}
+                      <span className="chip">{new Date(o.created_at).toLocaleString()}</span>
+                    </div>
+                  </div>
                 </article>
               ))
             )}

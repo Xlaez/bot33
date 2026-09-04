@@ -68,6 +68,11 @@ export type Settings = {
   execute_live: boolean;
   auto_copy_mint: boolean;
   mint_quantity: number;
+  meme_max_spend_wei?: string;
+  meme_max_spend_eth?: string;
+  meme_execute_live?: boolean;
+  meme_auto_buy?: boolean;
+  meme_slippage_bps?: number;
   has_signer?: boolean;
   signer_address?: string;
 };
@@ -121,6 +126,22 @@ export type MemeStats = {
   alerted: number;
 };
 
+export type MemeOrder = {
+  id: number;
+  source: string;
+  token: string;
+  pool_address: string;
+  dex: string;
+  spend_wei: string;
+  min_out_wei: string;
+  tx_hash: string;
+  status: string;
+  error: string;
+  dry_run: boolean;
+  signal_tx: string;
+  created_at: string;
+};
+
 
 export const api = {
   status: () => req<Status>("/status"),
@@ -141,13 +162,19 @@ export const api = {
     req<void>(`/collections/${address}`, { method: "DELETE" }),
   seedCollections: () => req<{ loaded: number }>("/collections/seed", { method: "POST" }),
   settings: () => req<Settings>("/settings"),
-  saveSettings: (body: Partial<Settings> & { max_spend_eth?: string }) =>
+  saveSettings: (body: Partial<Settings> & { max_spend_eth?: string; meme_max_spend_eth?: string }) =>
     req<Settings>("/settings", { method: "PUT", body: JSON.stringify(body) }),
   orders: (limit = 50) => req<MintOrder[]>(`/orders?limit=${limit}`),
   mint: (body: { collection: string; quantity?: number }) =>
     req<{ queued: boolean }>("/mint", { method: "POST", body: JSON.stringify(body) }),
   memes: (limit = 100) => req<MemeToken[]>(`/memes?limit=${limit}`),
   memeStats: () => req<MemeStats>("/memes/stats"),
+  memeOrders: (limit = 50) => req<MemeOrder[]>(`/memes/orders?limit=${limit}`),
+  memeBuy: (token: string) =>
+    req<{ queued: boolean; token: string }>("/memes/buy", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }),
 };
 
 export function shortAddr(a: string) {

@@ -33,8 +33,11 @@ Separate `meme-watcher` process (same Postgres) tracks Uniswap V2/V3/V4 launches
 
 - Age from **first liquidity**, max **30 days**
 - Telegram: `TELEGRAM_MEME_CHAT_ID` (separate from NFT chat)
-- **Hard gate:** alerts only when LP is locked (≥95% V2 LP burned, or V3 position NFT burned)
-- UI: **Memecoins** tab
+- **Hard gate:** alerts and buys only when LP is locked (≥95% V2 LP burned, or V3 position NFT burned)
+- UI: **Memecoins** tab — max spend, auto-buy, dry-run/LIVE, manual buy, order history
+- Auto-buy queues on locked-LP Telegram alert when `meme_auto_buy` is on
+- Swaps: Uniswap V2 (fee-on-transfer) and V3 `exactInputSingle`; V4 buy not yet supported
+- Live buys need `EXECUTOR_PRIVATE_KEY` + `meme_execute_live` (independent of NFT mint LIVE)
 
 ```bash
 go run ./cmd/meme-watcher

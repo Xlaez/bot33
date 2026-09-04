@@ -21,13 +21,18 @@ import (
 )
 
 type SettingsView struct {
-	MaxSpendWei   string `json:"max_spend_wei"`
-	MaxSpendETH   string `json:"max_spend_eth"`
-	ExecuteLive   bool   `json:"execute_live"`
-	AutoCopyMint  bool   `json:"auto_copy_mint"`
-	MintQuantity  uint64 `json:"mint_quantity"`
-	HasSigner     bool   `json:"has_signer"`
-	SignerAddress string `json:"signer_address,omitempty"`
+	MaxSpendWei     string `json:"max_spend_wei"`
+	MaxSpendETH     string `json:"max_spend_eth"`
+	ExecuteLive     bool   `json:"execute_live"`
+	AutoCopyMint    bool   `json:"auto_copy_mint"`
+	MintQuantity    uint64 `json:"mint_quantity"`
+	MemeMaxSpendWei string `json:"meme_max_spend_wei"`
+	MemeMaxSpendETH string `json:"meme_max_spend_eth"`
+	MemeExecuteLive bool   `json:"meme_execute_live"`
+	MemeAutoBuy     bool   `json:"meme_auto_buy"`
+	MemeSlippageBps int    `json:"meme_slippage_bps"`
+	HasSigner       bool   `json:"has_signer"`
+	SignerAddress   string `json:"signer_address,omitempty"`
 }
 
 type Engine struct {
@@ -353,13 +358,24 @@ func (e *Engine) SettingsView(ctx context.Context) (SettingsView, error) {
 		f := new(big.Float).Quo(new(big.Float).SetInt(wei), big.NewFloat(1e18))
 		eth = f.Text('f', 6)
 	}
+	mwei, _ := new(big.Int).SetString(s.MemeMaxSpendWei, 10)
+	meth := "0"
+	if mwei != nil {
+		f := new(big.Float).Quo(new(big.Float).SetInt(mwei), big.NewFloat(1e18))
+		meth = f.Text('f', 6)
+	}
 	return SettingsView{
-		MaxSpendWei:   s.MaxSpendWei,
-		MaxSpendETH:   eth,
-		ExecuteLive:   s.ExecuteLive,
-		AutoCopyMint:  s.AutoCopyMint,
-		MintQuantity:  s.MintQuantity,
-		HasSigner:     e.HasSigner(),
-		SignerAddress: e.SignerAddress(),
+		MaxSpendWei:     s.MaxSpendWei,
+		MaxSpendETH:     eth,
+		ExecuteLive:     s.ExecuteLive,
+		AutoCopyMint:    s.AutoCopyMint,
+		MintQuantity:    s.MintQuantity,
+		MemeMaxSpendWei: s.MemeMaxSpendWei,
+		MemeMaxSpendETH: meth,
+		MemeExecuteLive: s.MemeExecuteLive,
+		MemeAutoBuy:     s.MemeAutoBuy,
+		MemeSlippageBps: s.MemeSlippageBps,
+		HasSigner:       e.HasSigner(),
+		SignerAddress:   e.SignerAddress(),
 	}, nil
 }

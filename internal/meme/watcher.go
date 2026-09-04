@@ -28,12 +28,13 @@ type Watcher struct {
 	store    *store.Store
 	log      *slog.Logger
 	telegram *alert.Telegram
+	buyer    *Buyer
 	interval time.Duration
 	startLag uint64
 	maxAge   time.Duration
 }
 
-func NewWatcher(client *ethclient.Client, st *store.Store, log *slog.Logger, tg *alert.Telegram, interval time.Duration, startLag uint64) *Watcher {
+func NewWatcher(client *ethclient.Client, st *store.Store, log *slog.Logger, tg *alert.Telegram, buyer *Buyer, interval time.Duration, startLag uint64) *Watcher {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
@@ -42,6 +43,7 @@ func NewWatcher(client *ethclient.Client, st *store.Store, log *slog.Logger, tg 
 		store:    st,
 		log:      log,
 		telegram: tg,
+		buyer:    buyer,
 		interval: interval,
 		startLag: startLag,
 		maxAge:   30 * 24 * time.Hour,
@@ -593,5 +595,16 @@ func (w *Watcher) maybeAlert(ctx context.Context, address string, sc ScoreResult
 		return err
 	}
 	w.log.Info("meme alert sent", "token", address, "score", sc.Score, "symbol", tok.Symbol)
+
+	settings, err := w.store.GetSettings(ctx)
+	if err == nil && settings.MemeAutoBuy && w.buyer != nil {
+		w.log.Info("meme auto-buy queued", "token", address, "symbol", tok.Symbol)
+		w.buyer.Enqueue(BuyJob{
+			Source:   "copy",
+			Token:    common.HexToAddress(address),
+			SignalTx: tok.LaunchTx,
+			Label:    tok.Symbol,
+		})
+	}
 	return nil
 }

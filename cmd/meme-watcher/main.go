@@ -47,16 +47,32 @@ func main() {
 	defer client.Close()
 
 	tg := alert.NewTelegram(cfg.TelegramBotToken, cfg.TelegramMemeChatID)
-	w := meme.NewWatcher(client.HTTP, st, log, tg, cfg.MemePollInterval, cfg.StartBlockLag)
+	buyer, err := meme.NewBuyer(client.HTTP, st, log, tg, cfg.ExecutorPrivateKey, cfg.ChainID)
+	if err != nil {
+		log.Error("meme buyer", "err", err)
+		os.Exit(1)
+	}
+	w := meme.NewWatcher(client.HTTP, st, log, tg, buyer, cfg.MemePollInterval, cfg.StartBlockLag)
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- buyer.Run(ctx) }()
+	go func() { errCh <- w.Run(ctx) }()
 
 	log.Info("meme watcher ready",
 		"chain_id", cfg.ChainID,
 		"telegram", tg.Enabled(),
 		"chat_configured", cfg.TelegramMemeChatID != "",
 		"poll", cfg.MemePollInterval.String(),
+		"buyer", buyer.HasSigner(),
+		"signer", buyer.SignerAddress(),
 	)
-	if err := w.Run(ctx); err != nil && err != context.Canceled {
-		log.Error("fatal", "err", err)
-		os.Exit(1)
+	select {
+	case <-ctx.Done():
+		log.Info("shutting down")
+	case err := <-errCh:
+		if err != nil && err != context.Canceled {
+			log.Error("fatal", "err", err)
+			os.Exit(1)
+		}
 	}
 }

@@ -9,7 +9,9 @@ import (
 var (
 	WETH            = common.HexToAddress("0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73")
 	V2Factory       = common.HexToAddress("0x8bcEaA40B9AcdfAedF85AdF4FF01F5Ad6517937f")
+	V2Router        = common.HexToAddress("0x89e5db8b5aa49aa85ac63f691524311aeb649eba")
 	V3Factory       = common.HexToAddress("0x1f7d7550B1b028f7571E69A784071F0205FD2EfA")
+	V3SwapRouter02  = common.HexToAddress("0xCaf681a66D020601342297493863E78C959E5cb2")
 	V3PositionMgr   = common.HexToAddress("0x73991a25C818Bf1f1128dEAaB1492D45638DE0D3")
 	V4PoolManager   = common.HexToAddress("0x8366a39CC670B4001A1121B8F6A443A643e40951")
 	DeadAddress     = common.HexToAddress("0x000000000000000000000000000000000000dead")

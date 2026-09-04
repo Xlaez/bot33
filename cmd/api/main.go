@@ -20,6 +20,7 @@ import (
 	"github.com/xlaez/bot33/internal/chain"
 	"github.com/xlaez/bot33/internal/config"
 	"github.com/xlaez/bot33/internal/execute"
+	"github.com/xlaez/bot33/internal/meme"
 	"github.com/xlaez/bot33/internal/store"
 	"github.com/xlaez/bot33/internal/wallet"
 )
@@ -216,6 +217,7 @@ func main() {
 		log.Warn("rpc unavailable for mint API", "err", err)
 	}
 	var engine *execute.Engine
+	var memeBuyer *meme.Buyer
 	if client != nil {
 		defer client.Close()
 		tg := alert.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID)
@@ -226,6 +228,15 @@ func main() {
 		}
 		go func() {
 			_ = engine.Run(ctx)
+		}()
+		memeTg := alert.NewTelegram(cfg.TelegramBotToken, cfg.TelegramMemeChatID)
+		memeBuyer, err = meme.NewBuyer(client.HTTP, st, log, memeTg, cfg.ExecutorPrivateKey, cfg.ChainID)
+		if err != nil {
+			log.Error("meme buyer", "err", err)
+			os.Exit(1)
+		}
+		go func() {
+			_ = memeBuyer.Run(ctx)
 		}()
 	}
 
@@ -245,11 +256,16 @@ func main() {
 	})
 	api.Put("/settings", func(c *fiber.Ctx) error {
 		var body struct {
-			MaxSpendETH  *string `json:"max_spend_eth"`
-			MaxSpendWei  *string `json:"max_spend_wei"`
-			ExecuteLive  *bool   `json:"execute_live"`
-			AutoCopyMint *bool   `json:"auto_copy_mint"`
-			MintQuantity *uint64 `json:"mint_quantity"`
+			MaxSpendETH     *string `json:"max_spend_eth"`
+			MaxSpendWei     *string `json:"max_spend_wei"`
+			ExecuteLive     *bool   `json:"execute_live"`
+			AutoCopyMint    *bool   `json:"auto_copy_mint"`
+			MintQuantity    *uint64 `json:"mint_quantity"`
+			MemeMaxSpendETH *string `json:"meme_max_spend_eth"`
+			MemeMaxSpendWei *string `json:"meme_max_spend_wei"`
+			MemeExecuteLive *bool   `json:"meme_execute_live"`
+			MemeAutoBuy     *bool   `json:"meme_auto_buy"`
+			MemeSlippageBps *int    `json:"meme_slippage_bps"`
 		}
 		if err := c.BodyParser(&body); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
@@ -276,6 +292,25 @@ func main() {
 		}
 		if body.MintQuantity != nil {
 			cur.MintQuantity = *body.MintQuantity
+		}
+		if body.MemeMaxSpendWei != nil && strings.TrimSpace(*body.MemeMaxSpendWei) != "" {
+			cur.MemeMaxSpendWei = strings.TrimSpace(*body.MemeMaxSpendWei)
+		}
+		if body.MemeMaxSpendETH != nil && strings.TrimSpace(*body.MemeMaxSpendETH) != "" {
+			wei, err := ethToWei(strings.TrimSpace(*body.MemeMaxSpendETH))
+			if err != nil {
+				return fiber.NewError(fiber.StatusBadRequest, err.Error())
+			}
+			cur.MemeMaxSpendWei = wei
+		}
+		if body.MemeExecuteLive != nil {
+			cur.MemeExecuteLive = *body.MemeExecuteLive
+		}
+		if body.MemeAutoBuy != nil {
+			cur.MemeAutoBuy = *body.MemeAutoBuy
+		}
+		if body.MemeSlippageBps != nil {
+			cur.MemeSlippageBps = *body.MemeSlippageBps
 		}
 		if err := st.UpdateSettings(c.Context(), cur); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
@@ -336,6 +371,34 @@ func main() {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
 		return c.JSON(fiber.Map{"total": total, "lp_locked": locked, "alerted": alerted})
+	})
+	api.Get("/memes/orders", func(c *fiber.Ctx) error {
+		rows, err := st.ListMemeOrders(c.Context(), c.QueryInt("limit", 50))
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(rows)
+	})
+	api.Post("/memes/buy", func(c *fiber.Ctx) error {
+		if memeBuyer == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "meme buyer unavailable")
+		}
+		var body struct {
+			Token string `json:"token"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		addr := wallet.NormalizeAddress(body.Token)
+		if addr == "" || !strings.HasPrefix(addr, "0x") || len(addr) != 42 {
+			return fiber.NewError(fiber.StatusBadRequest, "valid token address required")
+		}
+		memeBuyer.Enqueue(meme.BuyJob{
+			Source: "manual",
+			Token:  common.HexToAddress(addr),
+			Label:  "manual",
+		})
+		return c.JSON(fiber.Map{"queued": true, "token": addr})
 	})
 
 	webDir := resolveWebDir()
