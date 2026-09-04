@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -27,11 +28,13 @@ type Config struct {
 	DiscoveryMinTrades int
 	DiscoveryTopN      int
 	DiscoveryWindow    time.Duration
-	MarketplaceEnabled bool
-	LogPollInterval    time.Duration
-	StartBlockLag      uint64
-	RootDir            string
-	ExecutorPrivateKey string
+	MarketplaceEnabled      bool
+	MarketplacePollInterval time.Duration
+	AlertSeaportMinWei      string
+	LogPollInterval         time.Duration
+	StartBlockLag           uint64
+	RootDir                 string
+	ExecutorPrivateKey      string
 }
 
 func Load() (Config, error) {
@@ -59,8 +62,10 @@ func Load() (Config, error) {
 		DiscoveryMinTrades: int(getenvInt64("DISCOVERY_MIN_TRADES", 5)),
 		DiscoveryTopN:      int(getenvInt64("DISCOVERY_TOP_N", 40)),
 		DiscoveryWindow:    getenvDuration("DISCOVERY_WINDOW", 30*24*time.Hour),
-		MarketplaceEnabled: getenvBool("MARKETPLACE_ENABLED", true),
-		LogPollInterval:    getenvDuration("LOG_POLL_INTERVAL", 3*time.Second),
+		MarketplaceEnabled:      getenvBool("MARKETPLACE_ENABLED", true),
+		MarketplacePollInterval: getenvDuration("MARKETPLACE_POLL_INTERVAL", 8*time.Second),
+		AlertSeaportMinWei:      ethEnvToWei("ALERT_SEAPORT_MIN_ETH", "0.01"),
+		LogPollInterval:         getenvDuration("LOG_POLL_INTERVAL", 3*time.Second),
 		StartBlockLag:      uint64(getenvInt64("START_BLOCK_LAG", 32)),
 		RootDir:            root,
 		ExecutorPrivateKey: os.Getenv("EXECUTOR_PRIVATE_KEY"),
@@ -155,4 +160,33 @@ func getenvDuration(k string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// ethEnvToWei reads an ETH decimal env (e.g. 0.01) and returns wei as decimal string.
+// Empty or "0" disables the threshold alert path (returns "0").
+func ethEnvToWei(key, defEth string) string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		v = defEth
+	}
+	if v == "0" || v == "0.0" {
+		return "0"
+	}
+	f, _, err := bigFloat().Parse(v, 10)
+	if err != nil {
+		f, _, err = bigFloat().Parse(defEth, 10)
+		if err != nil {
+			return "0"
+		}
+	}
+	wei := new(big.Float).Mul(f, big.NewFloat(1e18))
+	out, _ := wei.Int(nil)
+	if out == nil {
+		return "0"
+	}
+	return out.String()
+}
+
+func bigFloat() *big.Float {
+	return new(big.Float).SetPrec(256)
 }

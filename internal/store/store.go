@@ -192,17 +192,27 @@ func (s *Store) DeleteWallet(ctx context.Context, address string) error {
 	return nil
 }
 
-func (s *Store) ListTrades(ctx context.Context, limit int) ([]Trade, error) {
+func (s *Store) ListTrades(ctx context.Context, limit int, watchedOnly bool) ([]Trade, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	q := `
 SELECT id, wallet, collection, token_id, side, tx_hash, block_number, value_wei::text,
        COALESCE(counterparty,''), COALESCE(source,'transfer'), created_at
 FROM nft_trades
+`
+	if watchedOnly {
+		q += `
+WHERE wallet IN (
+  SELECT address FROM wallets WHERE active = TRUE AND source IN ('curated','discovered')
+)
+`
+	}
+	q += `
 ORDER BY created_at DESC
 LIMIT $1
-`, limit)
+`
+	rows, err := s.db.QueryContext(ctx, q, limit)
 	if err != nil {
 		return nil, err
 	}

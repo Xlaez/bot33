@@ -159,7 +159,9 @@ func main() {
 	})
 
 	api.Get("/trades", func(c *fiber.Ctx) error {
-		rows, err := st.ListTrades(c.Context(), c.QueryInt("limit", 100))
+		scope := strings.ToLower(strings.TrimSpace(c.Query("scope", "watched")))
+		watchedOnly := scope != "all"
+		rows, err := st.ListTrades(c.Context(), c.QueryInt("limit", 100), watchedOnly)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}

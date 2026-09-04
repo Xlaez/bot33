@@ -2,40 +2,97 @@ package marketplace
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/xlaez/bot33/internal/alert"
+	"github.com/xlaez/bot33/internal/chain"
+	"github.com/xlaez/bot33/internal/enrich"
 	"github.com/xlaez/bot33/internal/seaport"
 	"github.com/xlaez/bot33/internal/store"
+	"github.com/xlaez/bot33/internal/wallet"
 )
 
 const cursorName = "seaport_sales"
 
 type Poller struct {
-	client   *ethclient.Client
-	store    *store.Store
-	log      *slog.Logger
-	address  common.Address
-	interval time.Duration
-	startLag uint64
-	enabled  bool
+	client      *ethclient.Client
+	store       *store.Store
+	log         *slog.Logger
+	telegram    *alert.Telegram
+	enricher    *enrich.Enricher
+	address     common.Address
+	interval    time.Duration
+	startLag    uint64
+	enabled     bool
+	alertOnSell bool
+	minAlertWei *big.Int
+
+	mu    sync.RWMutex
+	watch map[string]wallet.Record
 }
 
-func New(client *ethclient.Client, st *store.Store, log *slog.Logger, enabled bool, interval time.Duration, startLag uint64) *Poller {
-	return &Poller{
-		client:   client,
-		store:    st,
-		log:      log,
-		address:  seaport.Address,
-		interval: interval,
-		startLag: startLag,
-		enabled:  enabled,
+func New(
+	client *ethclient.Client,
+	st *store.Store,
+	log *slog.Logger,
+	tg *alert.Telegram,
+	en *enrich.Enricher,
+	enabled bool,
+	interval time.Duration,
+	startLag uint64,
+	alertOnSell bool,
+	minAlertWei string,
+) *Poller {
+	minWei := big.NewInt(0)
+	if minAlertWei != "" && minAlertWei != "0" {
+		if v, ok := new(big.Int).SetString(minAlertWei, 10); ok {
+			minWei = v
+		}
 	}
+	return &Poller{
+		client:      client,
+		store:       st,
+		log:         log,
+		telegram:    tg,
+		enricher:    en,
+		address:     seaport.Address,
+		interval:    interval,
+		startLag:    startLag,
+		enabled:     enabled,
+		alertOnSell: alertOnSell,
+		minAlertWei: minWei,
+		watch:       map[string]wallet.Record{},
+	}
+}
+
+func (p *Poller) reloadWatch(ctx context.Context) error {
+	rows, err := p.store.ListActiveWatchSet(ctx)
+	if err != nil {
+		return err
+	}
+	next := make(map[string]wallet.Record, len(rows))
+	for _, r := range rows {
+		next[wallet.NormalizeAddress(r.Address)] = r
+	}
+	p.mu.Lock()
+	p.watch = next
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *Poller) lookup(addr common.Address) (wallet.Record, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	r, ok := p.watch[wallet.NormalizeAddress(addr.Hex())]
+	return r, ok
 }
 
 func (p *Poller) Run(ctx context.Context) error {
@@ -44,9 +101,12 @@ func (p *Poller) Run(ctx context.Context) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}
+	_ = p.reloadWatch(ctx)
 	p.log.Info("marketplace poller started", "seaport", p.address.Hex())
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
+	reload := time.NewTicker(2 * time.Minute)
+	defer reload.Stop()
 	backoff := p.interval
 	for {
 		if err := p.pollOnce(ctx); err != nil {
@@ -65,6 +125,10 @@ func (p *Poller) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-reload.C:
+			if err := p.reloadWatch(ctx); err != nil {
+				p.log.Error("marketplace reload watch set", "err", err)
+			}
 		case <-ticker.C:
 		}
 	}
@@ -117,6 +181,7 @@ func (p *Poller) pollOnce(ctx context.Context) error {
 		return err
 	}
 	written := 0
+	alerted := 0
 	for _, lg := range logs {
 		sale, ok, err := seaport.ParseOrderFulfilled(lg)
 		if err != nil {
@@ -150,6 +215,9 @@ func (p *Poller) pollOnce(ctx context.Context) error {
 				return err
 			}
 			written++
+			if p.maybeAlert(ctx, sale, "buy") {
+				alerted++
+			}
 		}
 		if sale.Seller != (common.Address{}) {
 			cp := ""
@@ -160,10 +228,86 @@ func (p *Poller) pollOnce(ctx context.Context) error {
 				return err
 			}
 			written++
+			if p.alertOnSell && p.maybeAlert(ctx, sale, "sell") {
+				alerted++
+			}
 		}
 	}
 	if written > 0 {
-		p.log.Info("marketplace sales ingested", "rows", written, "from", from, "to", to)
+		p.log.Info("marketplace sales ingested", "rows", written, "alerts", alerted, "from", from, "to", to)
 	}
 	return p.store.SetCursor(ctx, cursorName, to)
+}
+
+func (p *Poller) maybeAlert(ctx context.Context, sale *seaport.Sale, side string) bool {
+	if p.telegram == nil || !p.telegram.Enabled() {
+		return false
+	}
+	var party common.Address
+	switch side {
+	case "buy":
+		party = sale.Buyer
+	case "sell":
+		party = sale.Seller
+	default:
+		return false
+	}
+	rec, watched := p.lookup(party)
+	priceOk := sale.PriceWei != nil && p.minAlertWei.Sign() > 0 && sale.PriceWei.Cmp(p.minAlertWei) >= 0
+	if !watched {
+		if side != "buy" || !priceOk {
+			return false
+		}
+		rec = wallet.Record{
+			Address: wallet.NormalizeAddress(party.Hex()),
+			Label:   "market",
+			Source:  wallet.SourceDiscovered,
+			Score:   0,
+		}
+	} else if side == "sell" && !p.alertOnSell {
+		return false
+	}
+
+	name := sale.Collection.Hex()
+	if p.enricher != nil {
+		name = p.enricher.CollectionName(ctx, sale.Collection)
+	}
+	tokenID := "0"
+	if sale.TokenID != nil {
+		tokenID = sale.TokenID.String()
+	}
+	priceEth := "0"
+	if sale.PriceWei != nil && sale.PriceWei.Sign() > 0 {
+		f := new(big.Float).Quo(new(big.Float).SetInt(sale.PriceWei), big.NewFloat(1e18))
+		priceEth = f.Text('f', 6)
+	}
+	tag := "[CURATED]"
+	switch {
+	case !watched:
+		tag = "[MARKET]"
+	case rec.Source == wallet.SourceDiscovered:
+		tag = fmt.Sprintf("[DISCOVERED score=%.0f]", rec.Score)
+	}
+	label := rec.Label
+	if label == "" {
+		label = rec.Address
+	}
+	msg := fmt.Sprintf(
+		"%s %s %s NFT (seaport)\ncollection: %s #%s\nprice: %s ETH\nwallet: %s\ntx: %s\nwallet link: %s",
+		tag,
+		label,
+		side,
+		name,
+		tokenID,
+		priceEth,
+		rec.Address,
+		chain.ExplorerTx(sale.TxHash.Hex()),
+		chain.ExplorerAddress(rec.Address),
+	)
+	if err := p.telegram.SendText(ctx, msg); err != nil {
+		p.log.Error("telegram send failed", "err", err, "tx", sale.TxHash.Hex(), "side", side)
+		return false
+	}
+	p.log.Info("telegram alert sent", "side", side, "wallet", rec.Address, "watched", watched, "tx", sale.TxHash.Hex())
+	return true
 }

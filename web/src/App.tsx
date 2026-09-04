@@ -456,7 +456,7 @@ export default function App() {
           <div className="panel-head">
             <div>
               <h2>NFT activity</h2>
-              <p>Mint / buy / sell events from watched wallets.</p>
+              <p>Events from watched wallets (mint / buy / sell). Chain-wide Seaport sales are ingested for discovery but hidden here.</p>
             </div>
           </div>
           <div className="list">

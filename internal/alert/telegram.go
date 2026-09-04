@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -60,7 +61,8 @@ func (t *Telegram) SendText(ctx context.Context, msg string) error {
 	}
 	defer res.Body.Close()
 	if res.StatusCode >= 300 {
-		return fmt.Errorf("telegram status %d", res.StatusCode)
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return fmt.Errorf("telegram status %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return nil
 }

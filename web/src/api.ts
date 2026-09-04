@@ -97,7 +97,8 @@ export const api = {
   deleteWallet: (address: string) =>
     req<void>(`/wallets/${address}`, { method: "DELETE" }),
   seedWallets: () => req<{ loaded: number }>("/wallets/seed", { method: "POST" }),
-  trades: (limit = 100) => req<Trade[]>(`/trades?limit=${limit}`),
+  trades: (limit = 100, scope: "watched" | "all" = "watched") =>
+    req<Trade[]>(`/trades?limit=${limit}&scope=${scope}`),
   collections: () => req<Collection[]>("/collections"),
   addCollection: (body: { address: string; name?: string; notes?: string }) =>
     req<Collection>("/collections", { method: "POST", body: JSON.stringify(body) }),

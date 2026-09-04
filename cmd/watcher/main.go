@@ -96,7 +96,18 @@ func main() {
 		Window:    cfg.DiscoveryWindow,
 		Interval:  cfg.DiscoveryInterval,
 	})
-	mkt := marketplace.New(client.HTTP, st, log, cfg.MarketplaceEnabled, cfg.LogPollInterval, cfg.StartBlockLag)
+	mkt := marketplace.New(
+		client.HTTP,
+		st,
+		log,
+		tg,
+		en,
+		cfg.MarketplaceEnabled,
+		cfg.MarketplacePollInterval,
+		cfg.StartBlockLag,
+		cfg.AlertOnSell,
+		cfg.AlertSeaportMinWei,
+	)
 
 	errCh := make(chan error, 4)
 	go func() { errCh <- watcher.Run(ctx) }()
@@ -113,6 +124,7 @@ func main() {
 		"discovery_window", cfg.DiscoveryWindow.String(),
 		"discovery_top_n", cfg.DiscoveryTopN,
 		"marketplace", cfg.MarketplaceEnabled,
+		"alert_seaport_min_wei", cfg.AlertSeaportMinWei,
 	)
 	select {
 	case <-ctx.Done():
