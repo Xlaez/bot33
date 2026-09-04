@@ -456,7 +456,7 @@ export default function App() {
           <div className="panel-head">
             <div>
               <h2>NFT activity</h2>
-              <p>Events from watched wallets (mint / buy / sell). Chain-wide Seaport sales are ingested for discovery but hidden here.</p>
+              <p>Watched-wallet events. Telegram also fires on collection heat / premium Seaport prints.</p>
             </div>
           </div>
           <div className="list">

@@ -31,6 +31,11 @@ type Config struct {
 	MarketplaceEnabled      bool
 	MarketplacePollInterval time.Duration
 	AlertSeaportMinWei      string
+	AlertNotifyMinScore     float64
+	AlertHeatWindow         time.Duration
+	AlertHeatMinSales       int
+	AlertPremiumMultiple    float64
+	CollectionsPath         string
 	LogPollInterval         time.Duration
 	StartBlockLag           uint64
 	RootDir                 string
@@ -45,30 +50,39 @@ func Load() (Config, error) {
 	if !filepath.IsAbs(seedPath) && root != "" {
 		seedPath = filepath.Join(root, seedPath)
 	}
+	collPath := getenv("COLLECTIONS_PATH", "configs/collections.yaml")
+	if !filepath.IsAbs(collPath) && root != "" {
+		collPath = filepath.Join(root, collPath)
+	}
 
 	cfg := Config{
-		HTTPAddr:           getenv("HTTP_ADDR", ":8080"),
-		RHHTTPURL:          getenv("RH_RPC_HTTP", "https://rpc.mainnet.chain.robinhood.com"),
-		RHWSURL:            getenv("RH_RPC_WS", ""),
-		ChainID:            getenvInt64("CHAIN_ID", 4663),
-		DatabaseURL:        getenv("DATABASE_URL", "postgres://bot33:bot33@localhost:5433/bot33?sslmode=disable"),
-		RedisURL:           getenv("REDIS_URL", "redis://localhost:6379/0"),
-		TelegramBotToken:   os.Getenv("TELEGRAM_BOT_TOKEN"),
-		TelegramChatID:     os.Getenv("TELEGRAM_CHAT_ID"),
-		AlertOnSell:        getenvBool("ALERT_ON_SELL", false),
-		WalletsSeedPath:    seedPath,
-		DiscoveryInterval:  getenvDuration("DISCOVERY_INTERVAL", 1*time.Hour),
-		DiscoveryMinScore:  getenvFloat("DISCOVERY_MIN_SCORE", 70),
-		DiscoveryMinTrades: int(getenvInt64("DISCOVERY_MIN_TRADES", 5)),
-		DiscoveryTopN:      int(getenvInt64("DISCOVERY_TOP_N", 40)),
-		DiscoveryWindow:    getenvDuration("DISCOVERY_WINDOW", 30*24*time.Hour),
+		HTTPAddr:                getenv("HTTP_ADDR", ":8080"),
+		RHHTTPURL:               getenv("RH_RPC_HTTP", "https://rpc.mainnet.chain.robinhood.com"),
+		RHWSURL:                 getenv("RH_RPC_WS", ""),
+		ChainID:                 getenvInt64("CHAIN_ID", 4663),
+		DatabaseURL:             getenv("DATABASE_URL", "postgres://bot33:bot33@localhost:5433/bot33?sslmode=disable"),
+		RedisURL:                getenv("REDIS_URL", "redis://localhost:6379/0"),
+		TelegramBotToken:        os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramChatID:          os.Getenv("TELEGRAM_CHAT_ID"),
+		AlertOnSell:             getenvBool("ALERT_ON_SELL", false),
+		WalletsSeedPath:         seedPath,
+		DiscoveryInterval:       getenvDuration("DISCOVERY_INTERVAL", 1*time.Hour),
+		DiscoveryMinScore:       getenvFloat("DISCOVERY_MIN_SCORE", 70),
+		DiscoveryMinTrades:      int(getenvInt64("DISCOVERY_MIN_TRADES", 5)),
+		DiscoveryTopN:           int(getenvInt64("DISCOVERY_TOP_N", 40)),
+		DiscoveryWindow:         getenvDuration("DISCOVERY_WINDOW", 30*24*time.Hour),
 		MarketplaceEnabled:      getenvBool("MARKETPLACE_ENABLED", true),
 		MarketplacePollInterval: getenvDuration("MARKETPLACE_POLL_INTERVAL", 8*time.Second),
 		AlertSeaportMinWei:      ethEnvToWei("ALERT_SEAPORT_MIN_ETH", "0.01"),
+		AlertNotifyMinScore:     getenvFloat("ALERT_NOTIFY_MIN_SCORE", 60),
+		AlertHeatWindow:         getenvDuration("ALERT_HEAT_WINDOW", 30*time.Minute),
+		AlertHeatMinSales:       int(getenvInt64("ALERT_HEAT_MIN_SALES", 3)),
+		AlertPremiumMultiple:    getenvFloat("ALERT_PREMIUM_MULTIPLE", 1.5),
+		CollectionsPath:         collPath,
 		LogPollInterval:         getenvDuration("LOG_POLL_INTERVAL", 3*time.Second),
-		StartBlockLag:      uint64(getenvInt64("START_BLOCK_LAG", 32)),
-		RootDir:            root,
-		ExecutorPrivateKey: os.Getenv("EXECUTOR_PRIVATE_KEY"),
+		StartBlockLag:           uint64(getenvInt64("START_BLOCK_LAG", 32)),
+		RootDir:                 root,
+		ExecutorPrivateKey:      os.Getenv("EXECUTOR_PRIVATE_KEY"),
 	}
 	if cfg.RHHTTPURL == "" {
 		return Config{}, fmt.Errorf("RH_RPC_HTTP is required")

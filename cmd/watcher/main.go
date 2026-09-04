@@ -55,6 +55,16 @@ func main() {
 	} else {
 		log.Warn("seed file not found", "path", cfg.WalletsSeedPath)
 	}
+	if _, err := os.Stat(cfg.CollectionsPath); err == nil {
+		n, err := st.LoadCollectionsFile(ctx, cfg.CollectionsPath)
+		if err != nil {
+			log.Error("load collections", "err", err)
+			os.Exit(1)
+		}
+		log.Info("collections loaded", "count", n, "path", cfg.CollectionsPath)
+	} else {
+		log.Warn("collections file not found", "path", cfg.CollectionsPath)
+	}
 
 	rpcCtx, rpcCancel := context.WithTimeout(ctx, 20*time.Second)
 	defer rpcCancel()
@@ -96,18 +106,17 @@ func main() {
 		Window:    cfg.DiscoveryWindow,
 		Interval:  cfg.DiscoveryInterval,
 	})
-	mkt := marketplace.New(
-		client.HTTP,
-		st,
-		log,
-		tg,
-		en,
-		cfg.MarketplaceEnabled,
-		cfg.MarketplacePollInterval,
-		cfg.StartBlockLag,
-		cfg.AlertOnSell,
-		cfg.AlertSeaportMinWei,
-	)
+	mkt := marketplace.New(client.HTTP, st, log, tg, en, marketplace.Options{
+		Enabled:         cfg.MarketplaceEnabled,
+		Interval:        cfg.MarketplacePollInterval,
+		StartLag:        cfg.StartBlockLag,
+		AlertOnSell:     cfg.AlertOnSell,
+		MinPriceWei:     cfg.AlertSeaportMinWei,
+		NotifyMinScore:  cfg.AlertNotifyMinScore,
+		HeatWindow:      cfg.AlertHeatWindow,
+		HeatMinSales:    cfg.AlertHeatMinSales,
+		PremiumMultiple: cfg.AlertPremiumMultiple,
+	})
 
 	errCh := make(chan error, 4)
 	go func() { errCh <- watcher.Run(ctx) }()
@@ -124,7 +133,8 @@ func main() {
 		"discovery_window", cfg.DiscoveryWindow.String(),
 		"discovery_top_n", cfg.DiscoveryTopN,
 		"marketplace", cfg.MarketplaceEnabled,
-		"alert_seaport_min_wei", cfg.AlertSeaportMinWei,
+		"notify_min_score", cfg.AlertNotifyMinScore,
+		"heat_window", cfg.AlertHeatWindow.String(),
 	)
 	select {
 	case <-ctx.Done():

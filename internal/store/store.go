@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"os"
 	"time"
 
@@ -100,6 +101,9 @@ CREATE TABLE IF NOT EXISTS collections (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE collections ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'curated';
+CREATE INDEX IF NOT EXISTS idx_collections_active ON collections(active);
+
 CREATE TABLE IF NOT EXISTS bot_settings (
   id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   max_spend_wei NUMERIC NOT NULL DEFAULT 50000000000000000,
@@ -153,8 +157,19 @@ type Collection struct {
 	Address   string    `json:"address"`
 	Name      string    `json:"name"`
 	Notes     string    `json:"notes"`
+	Source    string    `json:"source,omitempty"`
 	Active    bool      `json:"active"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// CollectionSaleStats is a short-window view of secondary sales for one NFT contract.
+type CollectionSaleStats struct {
+	Collection   string
+	Sales        int
+	UniqueBuyers int
+	AvgWei       *big.Int
+	MaxWei       *big.Int
+	MedianWei    *big.Int
 }
 
 type Stats struct {
@@ -236,21 +251,29 @@ func (s *Store) UpsertCollection(ctx context.Context, c Collection) error {
 	if c.Address == "" {
 		return fmt.Errorf("empty address")
 	}
+	if c.Source == "" {
+		c.Source = "curated"
+	}
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO collections(address, name, notes, active, updated_at)
-VALUES ($1,$2,$3,$4,NOW())
+INSERT INTO collections(address, name, notes, active, source, updated_at)
+VALUES ($1,$2,$3,$4,$5,NOW())
 ON CONFLICT (address) DO UPDATE SET
   name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE collections.name END,
-  notes = EXCLUDED.notes,
+  notes = CASE WHEN EXCLUDED.notes <> '' THEN EXCLUDED.notes ELSE collections.notes END,
   active = EXCLUDED.active,
+  source = CASE
+    WHEN collections.source = 'curated' THEN collections.source
+    ELSE EXCLUDED.source
+  END,
   updated_at = NOW()
-`, c.Address, c.Name, c.Notes, c.Active)
+`, c.Address, c.Name, c.Notes, c.Active, c.Source)
 	return err
 }
 
 func (s *Store) ListCollections(ctx context.Context) ([]Collection, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT address, name, notes, active, updated_at FROM collections ORDER BY name ASC, address ASC
+SELECT address, name, notes, active, COALESCE(source,'curated'), updated_at
+FROM collections ORDER BY name ASC, address ASC
 `)
 	if err != nil {
 		return nil, err
@@ -259,13 +282,114 @@ SELECT address, name, notes, active, updated_at FROM collections ORDER BY name A
 	var out []Collection
 	for rows.Next() {
 		var c Collection
-		if err := rows.Scan(&c.Address, &c.Name, &c.Notes, &c.Active, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.Address, &c.Name, &c.Notes, &c.Active, &c.Source, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
 	}
 	if out == nil {
 		out = []Collection{}
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListActiveCollections(ctx context.Context) ([]Collection, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT address, name, notes, active, COALESCE(source,'curated'), updated_at
+FROM collections WHERE active = TRUE
+ORDER BY name ASC, address ASC
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Collection
+	for rows.Next() {
+		var c Collection
+		if err := rows.Scan(&c.Address, &c.Name, &c.Notes, &c.Active, &c.Source, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	if out == nil {
+		out = []Collection{}
+	}
+	return out, rows.Err()
+}
+
+// CollectionSaleStats returns priced buy-side seaport stats for a collection over window.
+func (s *Store) CollectionSaleStats(ctx context.Context, collection string, window time.Duration) (CollectionSaleStats, error) {
+	collection = wallet.NormalizeAddress(collection)
+	out := CollectionSaleStats{
+		Collection: collection,
+		AvgWei:     big.NewInt(0),
+		MaxWei:     big.NewInt(0),
+		MedianWei:  big.NewInt(0),
+	}
+	if collection == "" {
+		return out, nil
+	}
+	hours := int(window.Hours())
+	mins := int(window.Minutes())
+	interval := fmt.Sprintf("%d hours", hours)
+	if window < time.Hour {
+		if mins < 1 {
+			mins = 1
+		}
+		interval = fmt.Sprintf("%d minutes", mins)
+	} else if hours < 1 {
+		interval = "1 hours"
+	}
+	var avg, maxx string
+	err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*)::int,
+       COUNT(DISTINCT wallet)::int,
+       COALESCE(AVG(value_wei), 0)::text,
+       COALESCE(MAX(value_wei), 0)::text
+FROM nft_trades
+WHERE collection = $1
+  AND side = 'buy'
+  AND source = 'seaport'
+  AND value_wei > 0
+  AND created_at >= NOW() - ($2::text)::interval
+`, collection, interval).Scan(&out.Sales, &out.UniqueBuyers, &avg, &maxx)
+	if err != nil {
+		return out, err
+	}
+	if v, ok := new(big.Int).SetString(avg, 10); ok {
+		out.AvgWei = v
+	}
+	if v, ok := new(big.Int).SetString(maxx, 10); ok {
+		out.MaxWei = v
+	}
+
+	// Approximate median via ordered prices.
+	rows, err := s.db.QueryContext(ctx, `
+SELECT value_wei::text
+FROM nft_trades
+WHERE collection = $1
+  AND side = 'buy'
+  AND source = 'seaport'
+  AND value_wei > 0
+  AND created_at >= NOW() - ($2::text)::interval
+ORDER BY value_wei::numeric
+`, collection, interval)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	var prices []*big.Int
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return out, err
+		}
+		if v, ok := new(big.Int).SetString(raw, 10); ok {
+			prices = append(prices, v)
+		}
+	}
+	if n := len(prices); n > 0 {
+		out.MedianWei = prices[n/2]
 	}
 	return out, rows.Err()
 }
@@ -316,6 +440,7 @@ func (s *Store) LoadCollectionsFile(ctx context.Context, path string) (int, erro
 		if err := s.UpsertCollection(ctx, Collection{
 			Address: c.Address,
 			Name:    c.Name,
+			Source:  "curated",
 			Active:  true,
 		}); err != nil {
 			return n, err
