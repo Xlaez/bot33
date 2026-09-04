@@ -3,7 +3,8 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 COPY web/ ./
-RUN npm run build
+ARG GIT_SHA=unknown
+RUN echo "build ${GIT_SHA}" > /web/public-build-id.txt && npm run build && cp /web/public-build-id.txt /web/dist/build-id.txt
 
 FROM golang:1.24-alpine AS build
 WORKDIR /src
@@ -12,6 +13,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG CMD_PATH=./cmd/watcher
+ARG GIT_SHA=unknown
 RUN CGO_ENABLED=0 go build -o /out/app ${CMD_PATH}
 
 FROM alpine:3.20

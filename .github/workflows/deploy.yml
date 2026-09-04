@@ -99,6 +99,7 @@ jobs:
           key: ${{ secrets.SERVER_KEY }}
           port: ${{ secrets.SERVER_PORT || 22 }}
           script_stop: true
+          envs: GIT_SHA
           script: |
             set -euo pipefail
             cd /opt/bot33
@@ -106,8 +107,14 @@ jobs:
               echo "Missing /opt/bot33/.env — create it on the server before deploying."
               exit 1
             fi
-            docker compose pull || true
-            docker compose build --pull
-            docker compose up -d --remove-orphans
+            export GIT_SHA="${GIT_SHA:-deploy}"
+            echo "Building with GIT_SHA=${GIT_SHA}"
+            # Force a fresh web UI layer — rsync excludes web/dist, so the image must rebuild it.
+            docker compose build --pull --build-arg "GIT_SHA=${GIT_SHA}"
+            docker compose up -d --force-recreate --remove-orphans
             docker compose ps
+            echo "UI build id in api image:"
+            docker compose exec -T api cat /app/web/dist/build-id.txt || true
             docker compose logs --tail=40 api watcher || true
+        env:
+          GIT_SHA: ${{ github.sha }}

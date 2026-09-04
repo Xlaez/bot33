@@ -439,13 +439,28 @@ func main() {
 
 	webDir := resolveWebDir()
 	if webDir != "" {
+		app.Use(func(c *fiber.Ctx) error {
+			if err := c.Next(); err != nil {
+				return err
+			}
+			p := c.Path()
+			if p == "/" || strings.HasSuffix(p, ".html") {
+				c.Set("Cache-Control", "no-cache, no-store, must-revalidate")
+				c.Set("Pragma", "no-cache")
+			} else if strings.HasPrefix(p, "/assets/") {
+				c.Set("Cache-Control", "public, max-age=31536000, immutable")
+			}
+			return nil
+		})
 		app.Static("/", webDir, fiber.Static{
-			Index: "index.html",
+			Index:  "index.html",
+			MaxAge: 0,
 		})
 		app.Get("/*", func(c *fiber.Ctx) error {
 			if strings.HasPrefix(c.Path(), "/api") {
 				return fiber.ErrNotFound
 			}
+			c.Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			return c.SendFile(filepath.Join(webDir, "index.html"))
 		})
 	}

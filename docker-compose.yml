@@ -26,6 +26,7 @@ services:
       dockerfile: Dockerfile
       args:
         CMD_PATH: ./cmd/watcher
+        GIT_SHA: ${GIT_SHA:-dev}
     env_file:
       - .env
     environment:
@@ -47,6 +48,7 @@ services:
       dockerfile: Dockerfile
       args:
         CMD_PATH: ./cmd/api
+        GIT_SHA: ${GIT_SHA:-dev}
     env_file:
       - .env
     environment:
@@ -67,6 +69,7 @@ services:
       dockerfile: Dockerfile
       args:
         CMD_PATH: ./cmd/meme-watcher
+        GIT_SHA: ${GIT_SHA:-dev}
     env_file:
       - .env
     environment:
