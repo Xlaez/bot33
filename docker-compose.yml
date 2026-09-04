@@ -28,6 +28,12 @@ services:
         CMD_PATH: ./cmd/watcher
     env_file:
       - .env
+    environment:
+      # Inside the compose network use service DNS, not host-mapped localhost ports.
+      DATABASE_URL: postgres://bot33:bot33@postgres:5432/bot33?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      WALLETS_SEED_PATH: /app/configs/wallets.seed.yaml
+      COLLECTIONS_PATH: /app/configs/collections.yaml
     depends_on:
       postgres:
         condition: service_healthy
@@ -43,12 +49,17 @@ services:
         CMD_PATH: ./cmd/api
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgres://bot33:bot33@postgres:5432/bot33?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      WALLETS_SEED_PATH: /app/configs/wallets.seed.yaml
+      COLLECTIONS_PATH: /app/configs/collections.yaml
     ports:
       - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+
 volumes:
   pgdata:
-

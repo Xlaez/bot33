@@ -7,15 +7,13 @@ Watch curated/discovered wallets on Robinhood Chain (`4663`), alert via Telegram
 ```bash
 cp .env.example .env
 # TELEGRAM_* and optional EXECUTOR_PRIVATE_KEY
-# Production: point DATABASE_URL/REDIS_URL at the host Postgres/Redis (127.0.0.1)
 
-# Local only (dedicated Postgres :5434 / Redis :6381):
-docker compose -f docker-compose.dev.yml up -d postgres redis
-
-make web-build
-go run ./cmd/api        # UI http://127.0.0.1:8080
-go run ./cmd/watcher    # from repo root
+docker compose up -d --build
+# UI http://SERVER:8080
 ```
+
+For host-side `go run`, keep `.env` on published ports (`127.0.0.1:5434` / `:6381`).  
+Compose **overrides** `DATABASE_URL`/`REDIS_URL` inside `api`/`watcher` to `postgres:5432` and `redis:6379`.
 
 ## Deploy (Hetzner)
 
@@ -25,10 +23,9 @@ Required repo secrets: `SERVER_HOST`, `SERVER_USERNAME`, `SERVER_KEY`.
 
 On the server once:
 1. Create `/opt/bot33` and a `.env` (never committed; deploy will not overwrite it)
-2. Create DB/user on the existing Postgres if needed
-3. Ensure Docker is installed and the deploy user can run `docker compose`
+2. Ensure Docker is installed and the deploy user can run `docker compose`
 
-Production compose uses `network_mode: host` so containers reach host Postgres/Redis on `127.0.0.1`.
+This stack runs its **own** Postgres (`:5434`) and Redis (`:6381`) so it does not share the other app’s databases.
 
 ## Discovery
 
