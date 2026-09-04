@@ -19,17 +19,66 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure SSH
+      - name: Validate deploy secrets
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USERNAME: ${{ secrets.SERVER_USERNAME }}
+          SERVER_KEY: ${{ secrets.SERVER_KEY }}
+        run: |
+          set -euo pipefail
+          missing=0
+          [ -n "${SERVER_HOST:-}" ] || { echo "Missing secret: SERVER_HOST"; missing=1; }
+          [ -n "${SERVER_USERNAME:-}" ] || { echo "Missing secret: SERVER_USERNAME"; missing=1; }
+          [ -n "${SERVER_KEY:-}" ] || { echo "Missing secret: SERVER_KEY"; missing=1; }
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+          if ! printf '%s' "$SERVER_KEY" | grep -q "BEGIN .*PRIVATE KEY"; then
+            echo "SERVER_KEY does not look like a private key."
+            echo "Paste the FULL private key (including BEGIN/END lines), not the .pub file."
+            exit 1
+          fi
+          echo "Secrets present. Key fingerprint:"
+          keyfile="$(mktemp)"
+          printf '%s\n' "$SERVER_KEY" | tr -d '\r' > "$keyfile"
+          chmod 600 "$keyfile"
+          ssh-keygen -lf "$keyfile" || true
+          rm -f "$keyfile"
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.SERVER_KEY }}
+
+      - name: Trust server host key
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
-          echo "${{ secrets.SERVER_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts
+          chmod 700 ~/.ssh
+          port="${SERVER_PORT:-22}"
+          ssh-keyscan -p "$port" -H "$SERVER_HOST" >> ~/.ssh/known_hosts
 
-      - name: Sync code to server
+      - name: Verify SSH access
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USERNAME: ${{ secrets.SERVER_USERNAME }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
         run: |
           set -euo pipefail
+          port="${SERVER_PORT:-22}"
+          ssh -o BatchMode=yes -o IdentitiesOnly=yes -p "$port" \
+            "${SERVER_USERNAME}@${SERVER_HOST}" \
+            'echo ssh_ok; whoami; hostname; test -d /opt/bot33 || sudo mkdir -p /opt/bot33; test -w /opt/bot33 || sudo chown "$(whoami):$(whoami)" /opt/bot33; ls -ld /opt/bot33'
+
+      - name: Sync code to server
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USERNAME: ${{ secrets.SERVER_USERNAME }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+        run: |
+          set -euo pipefail
+          port="${SERVER_PORT:-22}"
           rsync -az --delete \
             --exclude '.git/' \
             --exclude '.env' \
@@ -39,8 +88,8 @@ jobs:
             --exclude 'bin/' \
             --exclude '.cursor/' \
             --exclude 'agent-transcripts/' \
-            -e "ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes" \
-            ./ "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}:/opt/bot33/"
+            -e "ssh -p ${port} -o BatchMode=yes -o IdentitiesOnly=yes" \
+            ./ "${SERVER_USERNAME}@${SERVER_HOST}:/opt/bot33/"
 
       - name: Build and restart containers
         uses: appleboy/ssh-action@v1.2.0
@@ -48,6 +97,7 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USERNAME }}
           key: ${{ secrets.SERVER_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
           script_stop: true
           script: |
             set -euo pipefail
