@@ -39,8 +39,9 @@ type Engine struct {
 	from   common.Address
 	chain  *big.Int
 
-	mu     sync.Mutex
-	queue  chan Job
+	mu       sync.Mutex
+	queue    chan Job
+	inflight map[string]struct{}
 }
 
 type Job struct {
@@ -53,12 +54,13 @@ type Job struct {
 
 func New(client *ethclient.Client, st *store.Store, log *slog.Logger, tg *alert.Telegram, privateKeyHex string, chainID int64) (*Engine, error) {
 	e := &Engine{
-		client: client,
-		store:  st,
-		log:    log,
-		tg:     tg,
-		chain:  big.NewInt(chainID),
-		queue:  make(chan Job, 64),
+		client:   client,
+		store:    st,
+		log:      log,
+		tg:       tg,
+		chain:    big.NewInt(chainID),
+		queue:    make(chan Job, 64),
+		inflight: map[string]struct{}{},
 	}
 	pk := strings.TrimSpace(privateKeyHex)
 	if pk != "" {
@@ -119,6 +121,64 @@ func (e *Engine) handle(ctx context.Context, job Job) error {
 	if qty == 0 {
 		qty = 1
 	}
+	collection := strings.ToLower(job.Collection.Hex())
+
+	// Same signal tx (copy) must only run once.
+	if job.SignalTx != "" {
+		done, err := e.store.HasProcessedSignalTx(ctx, job.SignalTx)
+		if err != nil {
+			return err
+		}
+		if done {
+			_ = e.store.InsertOrder(ctx, store.MintOrder{
+				Source:     job.Source,
+				Collection: collection,
+				Quantity:   qty,
+				Status:     "skipped_duplicate",
+				Error:      "signal tx already processed",
+				SignalTx:   job.SignalTx,
+				DryRun:     !settings.ExecuteLive,
+			})
+			e.log.Info("skip duplicate signal", "tx", job.SignalTx, "collection", collection)
+			return nil
+		}
+	}
+
+	// Never live-mint the same collection twice.
+	if settings.ExecuteLive {
+		already, err := e.store.HasLiveMintForCollection(ctx, collection)
+		if err != nil {
+			return err
+		}
+		if already {
+			_ = e.store.InsertOrder(ctx, store.MintOrder{
+				Source:     job.Source,
+				Collection: collection,
+				Quantity:   qty,
+				Status:     "skipped_duplicate",
+				Error:      "collection already minted live",
+				SignalTx:   job.SignalTx,
+				DryRun:     false,
+			})
+			e.log.Warn("skip duplicate collection mint", "collection", collection)
+			return nil
+		}
+	}
+
+	// In-process lock so concurrent queue jobs cannot double-broadcast one collection.
+	if !e.tryLockCollection(collection) {
+		_ = e.store.InsertOrder(ctx, store.MintOrder{
+			Source:     job.Source,
+			Collection: collection,
+			Quantity:   qty,
+			Status:     "skipped_duplicate",
+			Error:      "collection mint already in flight",
+			SignalTx:   job.SignalTx,
+			DryRun:     !settings.ExecuteLive,
+		})
+		return nil
+	}
+	defer e.unlockCollection(collection)
 
 	plan, err := seadrop.BuildPlan(ctx, e.client, job.Collection, qty)
 	if err != nil {
@@ -249,6 +309,22 @@ func (e *Engine) sendMint(ctx context.Context, plan *seadrop.Plan) (string, erro
 		return "", err
 	}
 	return signed.Hash().Hex(), nil
+}
+
+func (e *Engine) tryLockCollection(collection string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, ok := e.inflight[collection]; ok {
+		return false
+	}
+	e.inflight[collection] = struct{}{}
+	return true
+}
+
+func (e *Engine) unlockCollection(collection string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.inflight, collection)
 }
 
 func (e *Engine) notify(msg string) {

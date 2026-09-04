@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/xlaez/bot33/internal/wallet"
@@ -718,6 +719,34 @@ INSERT INTO mint_orders(source, collection, quantity, value_wei, fee_recipient, 
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 `, o.Source, o.Collection, o.Quantity, nullWei(o.ValueWei), o.FeeRecipient, o.SignalTx, o.TxHash, o.Status, o.Error, o.DryRun)
 	return err
+}
+
+// HasLiveMintForCollection reports whether we already broadcast a live mint for this collection.
+func (s *Store) HasLiveMintForCollection(ctx context.Context, collection string) (bool, error) {
+	collection = wallet.NormalizeAddress(collection)
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM mint_orders
+WHERE collection = $1
+  AND dry_run = FALSE
+  AND status IN ('broadcast', 'confirmed')
+`, collection).Scan(&n)
+	return n > 0, err
+}
+
+// HasProcessedSignalTx reports whether a copy-mint signal was already handled (any outcome that consumed it).
+func (s *Store) HasProcessedSignalTx(ctx context.Context, signalTx string) (bool, error) {
+	signalTx = strings.ToLower(strings.TrimSpace(signalTx))
+	if signalTx == "" {
+		return false, nil
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM mint_orders
+WHERE signal_tx = $1
+  AND status NOT IN ('rejected', 'skipped_duplicate')
+`, signalTx).Scan(&n)
+	return n > 0, err
 }
 
 func nullWei(v string) string {
