@@ -62,9 +62,29 @@ func (w *Watcher) Run(ctx context.Context) error {
 	rescore := time.NewTicker(2 * time.Minute)
 	defer rescore.Stop()
 	backoff := w.interval
+	tick := 0
 	for {
-		if err := w.pollLaunches(ctx); err != nil {
-			w.log.Error("meme launch poll failed", "err", err, "backoff", backoff.String())
+		var pollErr error
+		switch tick % 3 {
+		case 0:
+			pollErr = w.pollLaunches(ctx)
+			if pollErr != nil {
+				w.log.Error("meme launch poll failed", "err", pollErr, "backoff", backoff.String())
+			}
+		case 1:
+			if err := w.pollSwaps(ctx); err != nil {
+				pollErr = err
+				w.log.Error("meme swap poll failed", "err", err)
+			}
+		case 2:
+			if err := w.pollV3PositionBurns(ctx); err != nil {
+				pollErr = err
+				w.log.Error("meme v3 lock poll failed", "err", err)
+			}
+		}
+		tick++
+
+		if pollErr != nil && isRPCThrottle(pollErr) {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -73,15 +93,10 @@ func (w *Watcher) Run(ctx context.Context) error {
 			if backoff < 60*time.Second {
 				backoff *= 2
 			}
-		} else {
+		} else if pollErr == nil {
 			backoff = w.interval
 		}
-		if err := w.pollSwaps(ctx); err != nil {
-			w.log.Error("meme swap poll failed", "err", err)
-		}
-		if err := w.pollV3PositionBurns(ctx); err != nil {
-			w.log.Error("meme v3 lock poll failed", "err", err)
-		}
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -92,6 +107,17 @@ func (w *Watcher) Run(ctx context.Context) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func isRPCThrottle(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "429") ||
+		strings.Contains(s, "too many requests") ||
+		strings.Contains(s, "rate limit") ||
+		strings.Contains(s, "context deadline exceeded")
 }
 
 func (w *Watcher) pollRange(ctx context.Context, cursor string) (from, to uint64, err error) {
@@ -125,7 +151,7 @@ func (w *Watcher) pollRange(ctx context.Context, cursor string) (from, to uint64
 	if from > safe {
 		return from, safe, nil
 	}
-	to = from + 400
+	to = from + 120
 	if to > safe {
 		to = safe
 	}
@@ -211,7 +237,7 @@ func (w *Watcher) handleV2Pair(ctx context.Context, lg types.Log) error {
 	})
 	sc := Score(ScoreInput{
 		LPLocked: lock.Locked, LPLockPct: lock.Pct, OwnerRenounced: renounced,
-		HasLiquidity: true, Age: 0, QuoteIsWETH: quote == WETH,
+		HasLiquidity: true, Age: 0, QuoteIsWETH: quote == WETH || quote == ZeroAddress,
 	})
 	// First liquidity = pair creation time as proxy; refined when Mint seen via swaps path.
 	t := store.MemeToken{
@@ -229,23 +255,21 @@ func (w *Watcher) handleV2Pair(ctx context.Context, lg types.Log) error {
 }
 
 func (w *Watcher) handleV3Pool(ctx context.Context, lg types.Log) error {
-	if len(lg.Topics) < 3 || len(lg.Data) < 96 {
+	// PoolCreated(address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool)
+	if len(lg.Topics) < 4 || len(lg.Data) < 64 {
 		return fmt.Errorf("bad PoolCreated")
 	}
 	token0 := common.BytesToAddress(lg.Topics[1].Bytes())
 	token1 := common.BytesToAddress(lg.Topics[2].Bytes())
-	fee := new(big.Int).SetBytes(lg.Data[0:32])
-	pool := common.BytesToAddress(lg.Data[64:96])
+	fee := new(big.Int).SetBytes(lg.Topics[3].Bytes())
+	pool := common.BytesToAddress(lg.Data[32:64])
 	meme, quote, ok := classifyPair(token0, token1)
 	if !ok {
 		return nil
 	}
 	now := time.Now().UTC()
 	meta := FetchTokenMeta(ctx, w.client, meme)
-	lock, _ := CheckV3LPLock(ctx, w.client, V3PositionMgr)
-	// V3 lock is not inferred from global NPM burns; wait for position NFT burn events.
-	_ = lock
-	lock = LockResult{Locked: false, Evidence: "v3_awaiting_position_burn"}
+	lock := LockResult{Locked: false, Evidence: "v3_awaiting_position_burn"}
 	renounced := OwnerRenounced(ctx, w.client, meme)
 	_ = w.store.UpsertMemePool(ctx, store.MemePool{
 		PoolAddress: pool.Hex(), Token0: token0.Hex(), Token1: token1.Hex(),
@@ -254,7 +278,7 @@ func (w *Watcher) handleV3Pool(ctx context.Context, lg types.Log) error {
 	})
 	sc := Score(ScoreInput{
 		LPLocked: lock.Locked, LPLockPct: lock.Pct, OwnerRenounced: renounced,
-		HasLiquidity: true, Age: 0, QuoteIsWETH: quote == WETH,
+		HasLiquidity: true, Age: 0, QuoteIsWETH: quote == WETH || quote == ZeroAddress,
 	})
 	t := store.MemeToken{
 		Address: meme.Hex(), Symbol: meta.Symbol, Name: meta.Name, Decimals: meta.Decimals,
@@ -271,13 +295,15 @@ func (w *Watcher) handleV3Pool(ctx context.Context, lg types.Log) error {
 }
 
 func (w *Watcher) handleV4Init(ctx context.Context, lg types.Log) error {
-	// Initialize(bytes32 id, address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks, uint160 sqrtPriceX96, int24 tick)
-	if len(lg.Data) < 256 {
+	// Initialize(PoolId indexed id, Currency indexed currency0, Currency indexed currency1,
+	//            uint24 fee, int24 tickSpacing, Hooks hooks, uint160 sqrtPriceX96, int24 tick)
+	if len(lg.Topics) < 4 || len(lg.Data) < 96 {
 		return fmt.Errorf("bad V4 Initialize")
 	}
-	currency0 := common.BytesToAddress(lg.Data[32:64])
-	currency1 := common.BytesToAddress(lg.Data[64:96])
-	fee := new(big.Int).SetBytes(lg.Data[96:128])
+	poolID := lg.Topics[1].Hex()
+	currency0 := common.BytesToAddress(lg.Topics[2].Bytes())
+	currency1 := common.BytesToAddress(lg.Topics[3].Bytes())
+	fee := new(big.Int).SetBytes(lg.Data[0:32])
 	meme, quote, ok := classifyPair(currency0, currency1)
 	if !ok {
 		return nil
@@ -285,20 +311,19 @@ func (w *Watcher) handleV4Init(ctx context.Context, lg types.Log) error {
 	now := time.Now().UTC()
 	meta := FetchTokenMeta(ctx, w.client, meme)
 	renounced := OwnerRenounced(ctx, w.client, meme)
-	poolKey := common.BytesToHash(lg.Data[0:32]).Hex()
 	_ = w.store.UpsertMemePool(ctx, store.MemePool{
-		PoolAddress: poolKey, Token0: currency0.Hex(), Token1: currency1.Hex(),
+		PoolAddress: poolID, Token0: currency0.Hex(), Token1: currency1.Hex(),
 		MemeToken: meme.Hex(), QuoteToken: quote.Hex(), Dex: "uniswap-v4", FeeTier: int(fee.Int64()),
 		CreatedTx: lg.TxHash.Hex(), CreatedBlock: lg.BlockNumber,
 	})
-	// V4 LP lock detection is limited without locker indexing — require later rescore / manual evidence.
 	lock := LockResult{Locked: false, Evidence: "v4_lock_pending_indexer"}
 	sc := Score(ScoreInput{
-		LPLocked: false, OwnerRenounced: renounced, HasLiquidity: true, Age: 0, QuoteIsWETH: quote == WETH,
+		LPLocked: false, OwnerRenounced: renounced, HasLiquidity: true, Age: 0,
+		QuoteIsWETH: quote == WETH || quote == ZeroAddress,
 	})
 	t := store.MemeToken{
 		Address: meme.Hex(), Symbol: meta.Symbol, Name: meta.Name, Decimals: meta.Decimals,
-		PairedWith: quote.Hex(), PoolAddress: poolKey, Dex: "uniswap-v4", FeeTier: int(fee.Int64()),
+		PairedWith: quote.Hex(), PoolAddress: poolID, Dex: "uniswap-v4", FeeTier: int(fee.Int64()),
 		LaunchTx: lg.TxHash.Hex(), LaunchBlock: lg.BlockNumber, FirstLiquidityAt: &now,
 		LPLocked: lock.Locked, LPLockPct: lock.Pct, LPLockEvidence: lock.Evidence,
 		OwnerRenounced: renounced, Score: sc.Score, Flags: sc.Flags, Status: "watching",
@@ -551,7 +576,7 @@ func scoreInputFromToken(tok store.MemeToken) ScoreInput {
 		SwapCount:      tok.SwapCount,
 		UniqueTraders:  tok.UniqueTraders,
 		VolumeWei:      vol,
-		QuoteIsWETH:    strings.EqualFold(tok.PairedWith, WETH.Hex()),
+		QuoteIsWETH:    strings.EqualFold(tok.PairedWith, WETH.Hex()) || strings.EqualFold(tok.PairedWith, ZeroAddress.Hex()),
 	}
 }
 

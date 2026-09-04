@@ -19,7 +19,8 @@ var (
 )
 
 var QuoteTokens = map[common.Address]string{
-	WETH: "WETH",
+	WETH:        "WETH",
+	ZeroAddress: "ETH", // Uniswap v4 native currency
 }
 
 var (
