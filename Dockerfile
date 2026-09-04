@@ -1,3 +1,10 @@
+FROM node:20-alpine AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json* ./
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+COPY web/ ./
+RUN npm run build
+
 FROM golang:1.24-alpine AS build
 WORKDIR /src
 RUN apk add --no-cache git ca-certificates
@@ -12,6 +19,8 @@ RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=build /out/app /app/bot33
 COPY configs /app/configs
+COPY --from=web /web/dist /app/web/dist
 ENV WALLETS_SEED_PATH=/app/configs/wallets.seed.yaml
+ENV COLLECTIONS_PATH=/app/configs/collections.yaml
 EXPOSE 8080
 ENTRYPOINT ["/app/bot33"]

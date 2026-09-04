@@ -1,0 +1,63 @@
+name: Deploy to Hetzner
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-hetzner
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy /opt/bot33
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SERVER_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Sync code to server
+        run: |
+          set -euo pipefail
+          rsync -az --delete \
+            --exclude '.git/' \
+            --exclude '.env' \
+            --exclude '.env.*' \
+            --exclude 'web/node_modules/' \
+            --exclude 'web/dist/' \
+            --exclude 'bin/' \
+            --exclude '.cursor/' \
+            --exclude 'agent-transcripts/' \
+            -e "ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes" \
+            ./ "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}:/opt/bot33/"
+
+      - name: Build and restart containers
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          key: ${{ secrets.SERVER_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd /opt/bot33
+            if [ ! -f .env ]; then
+              echo "Missing /opt/bot33/.env — create it on the server before deploying."
+              exit 1
+            fi
+            docker compose pull || true
+            docker compose build --pull
+            docker compose up -d --remove-orphans
+            docker compose ps
+            docker compose logs --tail=40 api watcher || true

@@ -1,3 +1,5 @@
+# Local development — spins up dedicated Postgres/Redis on non-default ports
+# so it does not clash with other stacks on the machine.
 services:
   postgres:
     image: postgres:13-alpine
@@ -49,6 +51,6 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+
 volumes:
   pgdata:
-
