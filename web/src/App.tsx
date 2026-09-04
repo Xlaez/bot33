@@ -219,9 +219,9 @@ export default function App() {
     setError("");
     try {
       await api.memeBuy(manualMemeToken.trim());
-      notify("Meme buy queued");
+      notify("Meme buy completed (see Buy orders)");
       setManualMemeToken("");
-      setTimeout(() => void refresh(), 1200);
+      await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "buy failed");
     } finally {
@@ -234,8 +234,8 @@ export default function App() {
     setError("");
     try {
       await api.memeBuy(token);
-      notify("Meme buy queued");
-      setTimeout(() => void refresh(), 1200);
+      notify("Meme buy completed (see Buy orders)");
+      await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "buy failed");
     } finally {

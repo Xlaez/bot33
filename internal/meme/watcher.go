@@ -642,13 +642,17 @@ func (w *Watcher) maybeSmartWalletAlert(ctx context.Context, token, triggerLabel
 	w.log.Info("meme smart-wallet alert", "token", token, "wallets", n, "symbol", tok.Symbol)
 
 	if settings.MemeAutoBuy && w.buyer != nil && tok.LPLocked {
-		w.log.Info("meme auto-buy queued from smart-wallet watch", "token", token, "symbol", tok.Symbol)
-		w.buyer.Enqueue(BuyJob{
-			Source:   "smart_wallet",
-			Token:    common.HexToAddress(token),
-			SignalTx: txHash,
-			Label:    tok.Symbol,
-		})
+		if !w.buyer.HasSigner() && settings.MemeExecuteLive {
+			w.log.Error("meme auto-buy skipped: no EXECUTOR_PRIVATE_KEY on meme-watcher")
+		} else {
+			w.log.Info("meme auto-buy queued from smart-wallet watch", "token", token, "symbol", tok.Symbol)
+			w.buyer.Enqueue(BuyJob{
+				Source:   "smart_wallet",
+				Token:    common.HexToAddress(token),
+				SignalTx: txHash,
+				Label:    tok.Symbol,
+			})
+		}
 	}
 	return nil
 }
@@ -763,13 +767,17 @@ func (w *Watcher) maybeAlert(ctx context.Context, address string, sc ScoreResult
 
 	settings, err := w.store.GetSettings(ctx)
 	if err == nil && settings.MemeAutoBuy && w.buyer != nil {
-		w.log.Info("meme auto-buy queued", "token", address, "symbol", tok.Symbol)
-		w.buyer.Enqueue(BuyJob{
-			Source:   "copy",
-			Token:    common.HexToAddress(address),
-			SignalTx: tok.LaunchTx,
-			Label:    tok.Symbol,
-		})
+		if !w.buyer.HasSigner() && settings.MemeExecuteLive {
+			w.log.Error("meme auto-buy skipped: no EXECUTOR_PRIVATE_KEY on meme-watcher")
+		} else {
+			w.log.Info("meme auto-buy queued", "token", address, "symbol", tok.Symbol, "signer", w.buyer.HasSigner())
+			w.buyer.Enqueue(BuyJob{
+				Source:   "copy",
+				Token:    common.HexToAddress(address),
+				SignalTx: tok.LaunchTx,
+				Label:    tok.Symbol,
+			})
+		}
 	}
 	return nil
 }

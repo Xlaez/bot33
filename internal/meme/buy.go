@@ -84,6 +84,11 @@ func (b *Buyer) Enqueue(job BuyJob) {
 	}
 }
 
+// BuyNow runs a buy synchronously and returns a user-visible error.
+func (b *Buyer) BuyNow(ctx context.Context, job BuyJob) error {
+	return b.handle(ctx, job)
+}
+
 func (b *Buyer) Run(ctx context.Context) error {
 	for {
 		select {
@@ -92,6 +97,8 @@ func (b *Buyer) Run(ctx context.Context) error {
 		case job := <-b.queue:
 			if err := b.handle(ctx, job); err != nil {
 				b.log.Error("meme buy failed", "err", err, "token", job.Token.Hex(), "source", job.Source)
+				b.notify(fmt.Sprintf("[MEME BUY FAILED] %s\ntoken: %s\nsource: %s\nerr: %s",
+					job.Label, job.Token.Hex(), job.Source, err.Error()))
 			}
 		}
 	}
@@ -104,12 +111,21 @@ func (b *Buyer) handle(ctx context.Context, job BuyJob) error {
 	}
 	token := wallet.NormalizeAddress(job.Token.Hex())
 
+	if settings.MemeExecuteLive && b.key == nil {
+		_ = b.store.InsertMemeOrder(ctx, store.MemeOrder{
+			Source: job.Source, Token: token, Status: "rejected",
+			Error: "meme_execute_live but EXECUTOR_PRIVATE_KEY missing on this process",
+			DryRun: true, SignalTx: job.SignalTx,
+		})
+		return fmt.Errorf("no executor key loaded (set EXECUTOR_PRIVATE_KEY on api and meme-watcher)")
+	}
+
 	if !b.tryLock(token) {
 		_ = b.store.InsertMemeOrder(ctx, store.MemeOrder{
 			Source: job.Source, Token: token, Status: "skipped_duplicate",
 			Error: "buy already in flight", DryRun: !settings.MemeExecuteLive, SignalTx: job.SignalTx,
 		})
-		return nil
+		return fmt.Errorf("buy already in flight")
 	}
 	defer b.unlock(token)
 
@@ -123,7 +139,7 @@ func (b *Buyer) handle(ctx context.Context, job BuyJob) error {
 				Source: job.Source, Token: token, Status: "skipped_duplicate",
 				Error: "token already bought live", DryRun: false, SignalTx: job.SignalTx,
 			})
-			return nil
+			return fmt.Errorf("token already bought live")
 		}
 	}
 
@@ -159,7 +175,8 @@ func (b *Buyer) handle(ctx context.Context, job BuyJob) error {
 	if b.key == nil {
 		recipient = common.HexToAddress("0x0000000000000000000000000000000000000001")
 	}
-	plan, err := BuildBuyPlan(ctx, b.client, job.Token, tok.Dex, tok.FeeTier, spend, settings.MemeSlippageBps, recipient)
+	pool := common.HexToAddress(tok.PoolAddress)
+	plan, err := BuildBuyPlanWithPool(ctx, b.client, job.Token, tok.Dex, tok.FeeTier, pool, spend, settings.MemeSlippageBps, recipient)
 	if err != nil {
 		_ = b.store.InsertMemeOrder(ctx, store.MemeOrder{
 			Source: job.Source, Token: token, PoolAddress: tok.PoolAddress, Dex: tok.Dex,
@@ -178,7 +195,7 @@ func (b *Buyer) handle(ctx context.Context, job BuyJob) error {
 
 	if !live {
 		msg := ethereum.CallMsg{From: recipient, To: &plan.To, Value: plan.Value, Data: plan.Data}
-		_, callErr := b.client.CallContract(ctx, msg, nil)
+		_, callErr := callWithBalanceOverride(ctx, b.client, msg)
 		if callErr != nil {
 			order.Status = "dry_run_failed"
 			order.Error = callErr.Error()
@@ -187,10 +204,18 @@ func (b *Buyer) handle(ctx context.Context, job BuyJob) error {
 		}
 		order.Status = "dry_run_ok"
 		_ = b.store.InsertMemeOrder(ctx, order)
-		b.log.Info("meme dry-run buy ok", "token", token, "spend_wei", spend.String(), "dex", plan.Dex)
-		b.notify(fmt.Sprintf("[MEME DRY-RUN OK] %s\ntoken: %s\nspend: %s wei\ndex: %s\nmin_out: %s",
-			tok.Symbol, chain.ExplorerAddress(token), spend.String(), plan.Dex, plan.MinOut.String()))
+		b.log.Info("meme dry-run buy ok", "token", token, "spend_wei", spend.String(), "dex", plan.Dex, "fee", plan.FeeTier)
+		b.notify(fmt.Sprintf("[MEME DRY-RUN OK] %s\ntoken: %s\nspend: %s wei\ndex: %s fee=%d\nmin_out: %s\n(note: live needs meme_execute_live + key on this process)",
+			tok.Symbol, chain.ExplorerAddress(token), spend.String(), plan.Dex, plan.FeeTier, plan.MinOut.String()))
 		return nil
+	}
+
+	bal, err := b.client.BalanceAt(ctx, b.from, nil)
+	if err == nil && bal.Cmp(spend) < 0 {
+		order.Status = "rejected"
+		order.Error = fmt.Sprintf("insufficient ETH: have %s wei need %s wei", bal.String(), spend.String())
+		_ = b.store.InsertMemeOrder(ctx, order)
+		return fmt.Errorf("%s", order.Error)
 	}
 
 	txHash, err := b.send(ctx, plan)
@@ -203,7 +228,7 @@ func (b *Buyer) handle(ctx context.Context, job BuyJob) error {
 	order.Status = "broadcast"
 	order.TxHash = txHash
 	_ = b.store.InsertMemeOrder(ctx, order)
-	b.log.Info("meme buy broadcast", "token", token, "tx", txHash, "spend_wei", spend.String())
+	b.log.Info("meme buy broadcast", "token", token, "tx", txHash, "spend_wei", spend.String(), "fee", plan.FeeTier)
 	b.notify(fmt.Sprintf("[MEME LIVE BUY] %s\ntoken: %s\ntx: %s\nspend: %s wei",
 		tok.Symbol, chain.ExplorerAddress(token), chain.ExplorerTx(txHash), spend.String()))
 	return nil

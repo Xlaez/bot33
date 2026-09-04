@@ -180,7 +180,7 @@ export const api = {
   memeStats: () => req<MemeStats>("/memes/stats"),
   memeOrders: (limit = 50) => req<MemeOrder[]>(`/memes/orders?limit=${limit}`),
   memeBuy: (token: string) =>
-    req<{ queued: boolean; token: string }>("/memes/buy", {
+    req<{ ok: boolean; token: string }>("/memes/buy", {
       method: "POST",
       body: JSON.stringify({ token }),
     }),

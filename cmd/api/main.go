@@ -429,12 +429,20 @@ func main() {
 		if addr == "" || !strings.HasPrefix(addr, "0x") || len(addr) != 42 {
 			return fiber.NewError(fiber.StatusBadRequest, "valid token address required")
 		}
-		memeBuyer.Enqueue(meme.BuyJob{
+		job := meme.BuyJob{
 			Source: "manual",
 			Token:  common.HexToAddress(addr),
 			Label:  "manual",
+		}
+		if err := memeBuyer.BuyNow(c.Context(), job); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		return c.JSON(fiber.Map{
+			"ok":     true,
+			"token":  addr,
+			"signer": memeBuyer.SignerAddress(),
+			"live":   memeBuyer.HasSigner(),
 		})
-		return c.JSON(fiber.Map{"queued": true, "token": addr})
 	})
 
 	webDir := resolveWebDir()
