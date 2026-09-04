@@ -218,6 +218,16 @@ CREATE TABLE IF NOT EXISTS meme_pools (
 );
 
 CREATE INDEX IF NOT EXISTS idx_meme_pools_token ON meme_pools(meme_token);
+
+CREATE TABLE IF NOT EXISTS meme_smart_buys (
+  token TEXT NOT NULL,
+  wallet TEXT NOT NULL,
+  tx_hash TEXT NOT NULL DEFAULT '',
+  pool_address TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (token, wallet)
+);
+CREATE INDEX IF NOT EXISTS idx_meme_smart_buys_token_created ON meme_smart_buys(token, created_at DESC);
 `
 	_, err := s.db.ExecContext(ctx, q)
 	if err != nil {

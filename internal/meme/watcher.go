@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -14,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/xlaez/bot33/internal/alert"
 	"github.com/xlaez/bot33/internal/chain"
+	"github.com/xlaez/bot33/internal/nftgate"
 	"github.com/xlaez/bot33/internal/store"
 	"github.com/xlaez/bot33/internal/wallet"
 )
@@ -32,6 +34,9 @@ type Watcher struct {
 	interval time.Duration
 	startLag uint64
 	maxAge   time.Duration
+
+	mu    sync.RWMutex
+	watch map[string]wallet.Record
 }
 
 func NewWatcher(client *ethclient.Client, st *store.Store, log *slog.Logger, tg *alert.Telegram, buyer *Buyer, interval time.Duration, startLag uint64) *Watcher {
@@ -47,10 +52,35 @@ func NewWatcher(client *ethclient.Client, st *store.Store, log *slog.Logger, tg 
 		interval: interval,
 		startLag: startLag,
 		maxAge:   30 * 24 * time.Hour,
+		watch:    map[string]wallet.Record{},
 	}
 }
 
+func (w *Watcher) reloadWatchSet(ctx context.Context) error {
+	rows, err := w.store.ListActiveWatchSet(ctx)
+	if err != nil {
+		return err
+	}
+	next := make(map[string]wallet.Record, len(rows))
+	for _, r := range rows {
+		next[wallet.NormalizeAddress(r.Address)] = r
+	}
+	w.mu.Lock()
+	w.watch = next
+	w.mu.Unlock()
+	w.log.Info("meme smart-wallet watch loaded", "count", len(next))
+	return nil
+}
+
+func (w *Watcher) isWatched(addr common.Address) (wallet.Record, bool) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	r, ok := w.watch[wallet.NormalizeAddress(addr.Hex())]
+	return r, ok
+}
+
 func (w *Watcher) Run(ctx context.Context) error {
+	_ = w.reloadWatchSet(ctx)
 	w.log.Info("meme watcher started",
 		"v2_factory", V2Factory.Hex(),
 		"v3_factory", V3Factory.Hex(),
@@ -61,6 +91,8 @@ func (w *Watcher) Run(ctx context.Context) error {
 	defer ticker.Stop()
 	rescore := time.NewTicker(2 * time.Minute)
 	defer rescore.Stop()
+	reloadWatch := time.NewTicker(2 * time.Minute)
+	defer reloadWatch.Stop()
 	backoff := w.interval
 	tick := 0
 	for {
@@ -103,6 +135,10 @@ func (w *Watcher) Run(ctx context.Context) error {
 		case <-rescore.C:
 			if err := w.rescoreYoung(ctx); err != nil {
 				w.log.Error("meme rescore failed", "err", err)
+			}
+		case <-reloadWatch.C:
+			if err := w.reloadWatchSet(ctx); err != nil {
+				w.log.Error("meme watch reload", "err", err)
 			}
 		case <-ticker.C:
 		}
@@ -448,13 +484,13 @@ func (w *Watcher) pollSwaps(ctx context.Context) error {
 		return nil
 	}
 	addrs := make([]common.Address, 0, len(pools))
-	poolToToken := map[string]string{}
+	poolMeta := map[string]store.MemePool{}
 	for _, p := range pools {
 		if p.Dex == "uniswap-v4" {
 			continue // pool id is not a contract address
 		}
 		addrs = append(addrs, common.HexToAddress(p.PoolAddress))
-		poolToToken[wallet.NormalizeAddress(p.PoolAddress)] = p.MemeToken
+		poolMeta[wallet.NormalizeAddress(p.PoolAddress)] = p
 	}
 	if len(addrs) == 0 {
 		return w.store.SetCursor(ctx, cursorSwaps, to)
@@ -478,10 +514,11 @@ func (w *Watcher) pollSwaps(ctx context.Context) error {
 			return err
 		}
 		for _, lg := range logs {
-			token := poolToToken[wallet.NormalizeAddress(lg.Address.Hex())]
-			if token == "" {
+			meta, ok := poolMeta[wallet.NormalizeAddress(lg.Address.Hex())]
+			if !ok {
 				continue
 			}
+			token := meta.MemeToken
 			first, err := w.store.MarkSeen(ctx, "s:"+strings.ToLower(lg.TxHash.Hex()), lg.Index)
 			if err != nil {
 				return err
@@ -491,7 +528,6 @@ func (w *Watcher) pollSwaps(ctx context.Context) error {
 			}
 			vol := estimateSwapVolumeWei(lg)
 			if lg.Topics[0] == V2MintTopic {
-				// Liquidity add — re-check V2 lock.
 				pair := lg.Address
 				lock, err := CheckV2LPLock(ctx, w.client, pair)
 				if err == nil {
@@ -509,9 +545,112 @@ func (w *Watcher) pollSwaps(ctx context.Context) error {
 				}
 			}
 			_ = w.store.RecordMemeSwap(ctx, token, vol.String(), now)
+
+			if lg.Topics[0] == V2SwapTopic || lg.Topics[0] == V3SwapTopic {
+				w.handleSmartWalletSwap(ctx, lg, meta)
+			}
 		}
 	}
 	return w.store.SetCursor(ctx, cursorSwaps, to)
+}
+
+func (w *Watcher) handleSmartWalletSwap(ctx context.Context, lg types.Log, meta store.MemePool) {
+	recipient, ok := swapRecipient(lg)
+	if !ok {
+		return
+	}
+	rec, watched := w.isWatched(recipient)
+	if !watched {
+		return
+	}
+	meme := common.HexToAddress(meta.MemeToken)
+	t0 := common.HexToAddress(meta.Token0)
+	t1 := common.HexToAddress(meta.Token1)
+	if !isMemeTokenBuy(lg, meme, t0, t1) {
+		return
+	}
+	newBuyer, err := w.store.RecordMemeSmartBuy(ctx, meta.MemeToken, recipient.Hex(), lg.TxHash.Hex(), meta.PoolAddress)
+	if err != nil {
+		w.log.Warn("record meme smart buy", "err", err, "token", meta.MemeToken)
+		return
+	}
+	if !newBuyer {
+		return
+	}
+	label := rec.Label
+	if label == "" {
+		label = recipient.Hex()
+	}
+	w.log.Info("meme smart-wallet buy", "token", meta.MemeToken, "wallet", label, "tx", lg.TxHash.Hex())
+	_ = w.maybeSmartWalletAlert(ctx, meta.MemeToken, label, lg.TxHash.Hex())
+}
+
+func (w *Watcher) maybeSmartWalletAlert(ctx context.Context, token, triggerLabel, txHash string) error {
+	settings, err := w.store.GetSettings(ctx)
+	if err != nil {
+		return err
+	}
+	minW := settings.SmartWalletMin
+	if minW <= 0 {
+		minW = nftgate.DefaultSmartWalletMin
+	}
+	window := time.Duration(settings.SmartBuyWindowMin) * time.Minute
+	if window <= 0 {
+		window = nftgate.DefaultBuyWindow
+	}
+	n, err := w.store.CountMemeSmartBuyers(ctx, token, window)
+	if err != nil {
+		return err
+	}
+	if n < minW {
+		return nil
+	}
+	ok, err := w.store.TryMarkCollectionAlert(ctx, token, "meme_smart_wallet")
+	if err != nil || !ok {
+		return err
+	}
+	tok, err := w.store.GetMemeToken(ctx, token)
+	if err != nil {
+		return err
+	}
+	buyers, _ := w.store.ListMemeSmartBuyers(ctx, token, window, 5)
+	buyerStr := strings.Join(buyers, ", ")
+	msg := fmt.Sprintf(
+		"[MEME SMART_WALLET_WATCH] %d smart wallets bought %s (%s)\n"+
+			"source: smart wallets watch\n"+
+			"trigger: %s\nbuyers: %s\n"+
+			"dex: %s\nlp_locked: %v (%.1f%%)\nscore: %.0f\n"+
+			"token: %s\npool: %s\ntx: %s",
+		n,
+		tok.Symbol,
+		tok.Name,
+		triggerLabel,
+		buyerStr,
+		tok.Dex,
+		tok.LPLocked,
+		tok.LPLockPct,
+		tok.Score,
+		chain.ExplorerAddress(tok.Address),
+		chain.ExplorerAddress(tok.PoolAddress),
+		chain.ExplorerTx(txHash),
+	)
+	if w.telegram != nil && w.telegram.Enabled() {
+		if err := w.telegram.SendText(ctx, msg); err != nil {
+			w.log.Error("meme smart-wallet telegram", "err", err)
+		}
+	}
+	w.log.Info("meme smart-wallet alert", "token", token, "wallets", n, "symbol", tok.Symbol)
+
+	if settings.MemeAutoBuy && w.buyer != nil && tok.LPLocked {
+		w.log.Info("meme auto-buy queued from smart-wallet watch", "token", token, "symbol", tok.Symbol)
+		w.buyer.Enqueue(BuyJob{
+			Source:   "smart_wallet",
+			Token:    common.HexToAddress(token),
+			SignalTx: txHash,
+			Label:    tok.Symbol,
+		})
+	}
+	return nil
 }
 
 func estimateSwapVolumeWei(lg types.Log) *big.Int {
@@ -596,6 +735,7 @@ func (w *Watcher) maybeAlert(ctx context.Context, address string, sc ScoreResult
 	}
 	msg := fmt.Sprintf(
 		"[MEME score=%.0f] %s (%s)\n"+
+			"source: launch score / locked LP\n"+
 			"dex: %s\npair: %s\nlp_locked: %v (%.1f%%)\n"+
 			"flags: %s\nvolume_wei: %s swaps: %d\n"+
 			"token: %s\npool: %s\ntx: %s",

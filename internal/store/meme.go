@@ -248,6 +248,66 @@ WHERE first_liquidity_at IS NULL OR first_liquidity_at >= NOW() - INTERVAL '30 d
 	return
 }
 
+// RecordMemeSmartBuy records a watched-wallet buy. Returns true if this wallet is new for the token.
+func (s *Store) RecordMemeSmartBuy(ctx context.Context, token, walletAddr, txHash, pool string) (bool, error) {
+	token = wallet.NormalizeAddress(token)
+	walletAddr = wallet.NormalizeAddress(walletAddr)
+	if token == "" || walletAddr == "" {
+		return false, nil
+	}
+	res, err := s.db.ExecContext(ctx, `
+INSERT INTO meme_smart_buys(token, wallet, tx_hash, pool_address)
+VALUES ($1,$2,$3,$4)
+ON CONFLICT (token, wallet) DO NOTHING
+`, token, walletAddr, strings.ToLower(txHash), wallet.NormalizeAddress(pool))
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+func (s *Store) CountMemeSmartBuyers(ctx context.Context, token string, window time.Duration) (int, error) {
+	token = wallet.NormalizeAddress(token)
+	if window <= 0 {
+		window = 6 * time.Hour
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM meme_smart_buys
+WHERE token = $1 AND created_at >= NOW() - ($2 * INTERVAL '1 second')
+`, token, int64(window.Seconds())).Scan(&n)
+	return n, err
+}
+
+func (s *Store) ListMemeSmartBuyers(ctx context.Context, token string, window time.Duration, limit int) ([]string, error) {
+	token = wallet.NormalizeAddress(token)
+	if window <= 0 {
+		window = 6 * time.Hour
+	}
+	if limit <= 0 || limit > 20 {
+		limit = 10
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT wallet FROM meme_smart_buys
+WHERE token = $1 AND created_at >= NOW() - ($2 * INTERVAL '1 second')
+ORDER BY created_at ASC LIMIT $3
+`, token, int64(window.Seconds()), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var w string
+		if err := rows.Scan(&w); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
 func scanMemeTokens(rows *sql.Rows) ([]MemeToken, error) {
 	var out []MemeToken
 	for rows.Next() {

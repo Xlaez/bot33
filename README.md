@@ -37,7 +37,9 @@ Separate `meme-watcher` (same Postgres) tracks Uniswap V2/V3/V4 launches.
 
 - Age from **first liquidity**, max **30 days**
 - Telegram: `TELEGRAM_MEME_CHAT_ID`
-- Alerts/buys only with **locked LP** + score ≥70
+- Alerts/buys only with **locked LP** + score ≥70, **or** ≥2 smart wallets buying the same token (`SMART_WALLET_WATCH`)
+- Smart-wallet path uses the same curated/discovered watch set as NFTs; Telegram says `source: smart wallets watch`
+- Auto-buy on smart-wallet consensus only if LP is also locked
 - UI Memecoins tab: max spend, auto-buy, dry-run/LIVE, orders
 - Live meme buys: first executor key + `meme_execute_live`
 
