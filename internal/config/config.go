@@ -42,6 +42,7 @@ type Config struct {
 	StartBlockLag           uint64
 	RootDir                 string
 	ExecutorPrivateKey      string
+	ExecutorPrivateKeys     []string
 }
 
 func Load() (Config, error) {
@@ -87,11 +88,34 @@ func Load() (Config, error) {
 		StartBlockLag:           uint64(getenvInt64("START_BLOCK_LAG", 32)),
 		RootDir:                 root,
 		ExecutorPrivateKey:      os.Getenv("EXECUTOR_PRIVATE_KEY"),
+		ExecutorPrivateKeys:     parseKeyList(os.Getenv("EXECUTOR_PRIVATE_KEYS"), os.Getenv("EXECUTOR_PRIVATE_KEY")),
 	}
 	if cfg.RHHTTPURL == "" {
 		return Config{}, fmt.Errorf("RH_RPC_HTTP is required")
 	}
 	return cfg, nil
+}
+
+func parseKeyList(multi, single string) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	add := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		key := strings.ToLower(raw)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, raw)
+	}
+	for _, part := range strings.Split(multi, ",") {
+		add(part)
+	}
+	add(single)
+	return out
 }
 
 func findRoot() string {

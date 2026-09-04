@@ -221,7 +221,7 @@ func main() {
 	if client != nil {
 		defer client.Close()
 		tg := alert.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID)
-		engine, err = execute.New(client.HTTP, st, log, tg, cfg.ExecutorPrivateKey, cfg.ChainID)
+		engine, err = execute.NewMulti(client.HTTP, st, log, tg, cfg.ExecutorPrivateKeys, cfg.ChainID)
 		if err != nil {
 			log.Error("executor", "err", err)
 			os.Exit(1)
@@ -229,8 +229,12 @@ func main() {
 		go func() {
 			_ = engine.Run(ctx)
 		}()
+		memeKey := cfg.ExecutorPrivateKey
+		if memeKey == "" && len(cfg.ExecutorPrivateKeys) > 0 {
+			memeKey = cfg.ExecutorPrivateKeys[0]
+		}
 		memeTg := alert.NewTelegram(cfg.TelegramBotToken, cfg.TelegramMemeChatID)
-		memeBuyer, err = meme.NewBuyer(client.HTTP, st, log, memeTg, cfg.ExecutorPrivateKey, cfg.ChainID)
+		memeBuyer, err = meme.NewBuyer(client.HTTP, st, log, memeTg, memeKey, cfg.ChainID)
 		if err != nil {
 			log.Error("meme buyer", "err", err)
 			os.Exit(1)
@@ -256,16 +260,22 @@ func main() {
 	})
 	api.Put("/settings", func(c *fiber.Ctx) error {
 		var body struct {
-			MaxSpendETH     *string `json:"max_spend_eth"`
-			MaxSpendWei     *string `json:"max_spend_wei"`
-			ExecuteLive     *bool   `json:"execute_live"`
-			AutoCopyMint    *bool   `json:"auto_copy_mint"`
-			MintQuantity    *uint64 `json:"mint_quantity"`
-			MemeMaxSpendETH *string `json:"meme_max_spend_eth"`
-			MemeMaxSpendWei *string `json:"meme_max_spend_wei"`
-			MemeExecuteLive *bool   `json:"meme_execute_live"`
-			MemeAutoBuy     *bool   `json:"meme_auto_buy"`
-			MemeSlippageBps *int    `json:"meme_slippage_bps"`
+			MaxSpendETH          *string `json:"max_spend_eth"`
+			MaxSpendWei          *string `json:"max_spend_wei"`
+			ExecuteLive          *bool   `json:"execute_live"`
+			AutoCopyMint         *bool   `json:"auto_copy_mint"`
+			MintQuantity         *uint64 `json:"mint_quantity"`
+			MintMaxWallets       *int    `json:"mint_max_wallets"`
+			MintMaxTotal         *int    `json:"mint_max_total"`
+			SmartWalletMin       *int    `json:"smart_wallet_min"`
+			SmartMintWindowMin   *int    `json:"smart_mint_window_min"`
+			SmartBuyWindowMin    *int    `json:"smart_buy_window_min"`
+			NewCollectionMaxAgeH *int    `json:"new_collection_max_age_h"`
+			MemeMaxSpendETH      *string `json:"meme_max_spend_eth"`
+			MemeMaxSpendWei      *string `json:"meme_max_spend_wei"`
+			MemeExecuteLive      *bool   `json:"meme_execute_live"`
+			MemeAutoBuy          *bool   `json:"meme_auto_buy"`
+			MemeSlippageBps      *int    `json:"meme_slippage_bps"`
 		}
 		if err := c.BodyParser(&body); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
@@ -292,6 +302,24 @@ func main() {
 		}
 		if body.MintQuantity != nil {
 			cur.MintQuantity = *body.MintQuantity
+		}
+		if body.MintMaxWallets != nil {
+			cur.MintMaxWallets = *body.MintMaxWallets
+		}
+		if body.MintMaxTotal != nil {
+			cur.MintMaxTotal = *body.MintMaxTotal
+		}
+		if body.SmartWalletMin != nil {
+			cur.SmartWalletMin = *body.SmartWalletMin
+		}
+		if body.SmartMintWindowMin != nil {
+			cur.SmartMintWindowMin = *body.SmartMintWindowMin
+		}
+		if body.SmartBuyWindowMin != nil {
+			cur.SmartBuyWindowMin = *body.SmartBuyWindowMin
+		}
+		if body.NewCollectionMaxAgeH != nil {
+			cur.NewCollectionMaxAgeH = *body.NewCollectionMaxAgeH
 		}
 		if body.MemeMaxSpendWei != nil && strings.TrimSpace(*body.MemeMaxSpendWei) != "" {
 			cur.MemeMaxSpendWei = strings.TrimSpace(*body.MemeMaxSpendWei)
@@ -336,8 +364,10 @@ func main() {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "rpc/executor unavailable")
 		}
 		var body struct {
-			Collection string `json:"collection"`
-			Quantity   uint64 `json:"quantity"`
+			Collection  string `json:"collection"`
+			Quantity    uint64 `json:"quantity"`
+			WalletCount int    `json:"wallet_count"`
+			Sweep       bool   `json:"sweep"`
 		}
 		if err := c.BodyParser(&body); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
@@ -348,6 +378,12 @@ func main() {
 		}
 		if body.Quantity == 0 {
 			body.Quantity = 1
+		}
+		if body.Sweep || body.WalletCount > 1 {
+			if err := engine.ManualSweep(c.Context(), addr, body.Quantity, body.WalletCount); err != nil {
+				return fiber.NewError(fiber.StatusBadRequest, err.Error())
+			}
+			return c.JSON(fiber.Map{"queued": true, "collection": addr, "quantity": body.Quantity, "wallet_count": body.WalletCount, "sweep": true})
 		}
 		engine.Enqueue(execute.Job{
 			Source:     "manual",

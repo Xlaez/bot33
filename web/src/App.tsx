@@ -36,6 +36,7 @@ export default function App() {
   const [memeMaxSpendEth, setMemeMaxSpendEth] = useState("0.02");
   const [mintCollection, setMintCollection] = useState("");
   const [mintQty, setMintQty] = useState("1");
+  const [sweepWallets, setSweepWallets] = useState("3");
   const [manualMemeToken, setManualMemeToken] = useState("");
 
   const notify = (msg: string) => {
@@ -68,6 +69,8 @@ export default function App() {
       setMemeOrders(mo);
       if (set.max_spend_eth) setMaxSpendEth(set.max_spend_eth);
       if (set.meme_max_spend_eth) setMemeMaxSpendEth(set.meme_max_spend_eth);
+      if (set.mint_max_wallets) setSweepWallets(String(set.mint_max_wallets));
+      if (set.mint_quantity) setMintQty(String(set.mint_quantity));
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed to load");
     }
@@ -190,6 +193,26 @@ export default function App() {
     }
   }
 
+  async function onSweepMint(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api.mint({
+        collection: mintCollection.trim(),
+        quantity: Number(mintQty) || 1,
+        wallet_count: Number(sweepWallets) || 1,
+        sweep: true,
+      });
+      notify("Free-mint sweep queued");
+      setTimeout(() => void refresh(), 1200);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "sweep failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onManualMemeBuy(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -227,8 +250,8 @@ export default function App() {
           bot<span>33</span>
         </h1>
         <p className="tagline">
-          Robinhood NFT + memecoin watch. Cap NFT mint spend in Execute; meme buys on Memecoins.
-          Memes alert/buy only with locked LP.
+          Smart-wallet NFT priority (2+ wallets), free-mint sweeps, and memecoin watches.
+          Sell alerts off. Memes buy only with locked LP.
         </p>
         <div className="stats">
           <div className="stat">
@@ -290,8 +313,10 @@ export default function App() {
             <div>
               <h2>Execution</h2>
               <p>
-                Max spend blocks any mint above the cap. Live mode needs{" "}
-                <code>EXECUTOR_PRIVATE_KEY</code> in `.env`.
+                Free-mint alerts fire when ≥{settings?.smart_wallet_min ?? 2} smart wallets hit a
+                new SeaDrop (price 0). Auto-copy sweeps up to{" "}
+                {settings?.mint_max_wallets ?? 3} wallets × qty (cap {settings?.mint_max_total ?? 20}{" "}
+                total). Signers: {settings?.signer_count ?? 0}. LIVE needs keys in `.env`.
               </p>
             </div>
           </div>
@@ -305,12 +330,12 @@ export default function App() {
               style={{ fontFamily: "var(--font-display)" }}
             />
             <div className="meta" style={{ alignItems: "center" }}>
-              <span className="chip">{settings?.has_signer ? `signer ${shortAddr(settings.signer_address || "")}` : "no signer"}</span>
+              <span className="chip">{settings?.has_signer ? `signers ${settings.signer_count ?? 1}` : "no signer"}</span>
               <span className={`chip ${settings?.execute_live ? "sell" : "mint"}`}>
                 {settings?.execute_live ? "live" : "dry-run"}
               </span>
               <span className={`chip ${settings?.auto_copy_mint ? "curated" : ""}`}>
-                {settings?.auto_copy_mint ? "auto-copy on" : "auto-copy off"}
+                {settings?.auto_copy_mint ? "auto-sweep on" : "auto-sweep off"}
               </span>
             </div>
             <button
@@ -332,7 +357,7 @@ export default function App() {
                 void saveSettings({ auto_copy_mint: !settings?.auto_copy_mint })
               }
             >
-              {settings?.auto_copy_mint ? "Disable auto-copy" : "Enable auto-copy"}
+              {settings?.auto_copy_mint ? "Disable auto-sweep" : "Enable auto-sweep"}
             </button>
             <button
               className="btn btn-ghost"
@@ -349,16 +374,44 @@ export default function App() {
               onChange={(e) => {
                 const n = Number(e.target.value) || 1;
                 setSettings((s) => (s ? { ...s, mint_quantity: n } : s));
+                setMintQty(String(n));
               }}
               onBlur={() =>
                 void saveSettings({ mint_quantity: settings?.mint_quantity ?? 1 })
               }
-              title="Default mint quantity"
+              title="Qty per wallet"
+            />
+            <input
+              className="input"
+              style={{ maxWidth: "6rem" }}
+              value={String(settings?.mint_max_wallets ?? 3)}
+              onChange={(e) => {
+                const n = Number(e.target.value) || 1;
+                setSettings((s) => (s ? { ...s, mint_max_wallets: n } : s));
+                setSweepWallets(String(n));
+              }}
+              onBlur={() =>
+                void saveSettings({ mint_max_wallets: settings?.mint_max_wallets ?? 3 })
+              }
+              title="Max wallets per sweep"
+            />
+            <input
+              className="input"
+              style={{ maxWidth: "6rem" }}
+              value={String(settings?.mint_max_total ?? 20)}
+              onChange={(e) => {
+                const n = Number(e.target.value) || 1;
+                setSettings((s) => (s ? { ...s, mint_max_total: n } : s));
+              }}
+              onBlur={() =>
+                void saveSettings({ mint_max_total: settings?.mint_max_total ?? 20 })
+              }
+              title="Max total NFTs per collection"
             />
           </div>
 
-          <h2 style={{ fontSize: "1.05rem", margin: "0 0 0.75rem" }}>Manual mint</h2>
-          <form className="form" onSubmit={onManualMint}>
+          <h2 style={{ fontSize: "1.05rem", margin: "0 0 0.75rem" }}>Manual mint / free sweep</h2>
+          <form className="form" onSubmit={onManualMint} style={{ marginBottom: "0.75rem" }}>
             <input
               className="input"
               required
@@ -370,10 +423,34 @@ export default function App() {
               className="input"
               value={mintQty}
               onChange={(e) => setMintQty(e.target.value)}
-              placeholder="Qty"
+              placeholder="Qty/wallet"
             />
             <button className="btn btn-primary" type="submit" disabled={busy}>
               Queue mint
+            </button>
+          </form>
+          <form className="form" onSubmit={onSweepMint}>
+            <input
+              className="input"
+              required
+              placeholder="0x free SeaDrop collection"
+              value={mintCollection}
+              onChange={(e) => setMintCollection(e.target.value)}
+            />
+            <input
+              className="input"
+              value={mintQty}
+              onChange={(e) => setMintQty(e.target.value)}
+              placeholder="Qty/wallet"
+            />
+            <input
+              className="input"
+              value={sweepWallets}
+              onChange={(e) => setSweepWallets(e.target.value)}
+              placeholder="# wallets"
+            />
+            <button className="btn btn-primary" type="submit" disabled={busy}>
+              Sweep free mint
             </button>
           </form>
 
@@ -397,6 +474,7 @@ export default function App() {
                       {o.collection}
                     </a>
                     <div className="meta">
+                      {o.signer ? <span className="chip">{shortAddr(o.signer)}</span> : null}
                       <span className="chip">{o.value_wei} wei</span>
                       {o.tx_hash ? (
                         <a className="chip" href={explorerTx(o.tx_hash)} target="_blank" rel="noreferrer">

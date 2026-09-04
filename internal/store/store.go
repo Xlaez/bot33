@@ -120,6 +120,22 @@ ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meme_max_spend_wei NUMERIC NOT
 ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meme_execute_live BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meme_auto_buy BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meme_slippage_bps INTEGER NOT NULL DEFAULT 1000;
+ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS mint_max_wallets INTEGER NOT NULL DEFAULT 3;
+ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS mint_max_total INTEGER NOT NULL DEFAULT 20;
+ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS smart_wallet_min INTEGER NOT NULL DEFAULT 2;
+ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS smart_mint_window_min INTEGER NOT NULL DEFAULT 120;
+ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS smart_buy_window_min INTEGER NOT NULL DEFAULT 360;
+ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS new_collection_max_age_h INTEGER NOT NULL DEFAULT 24;
+
+ALTER TABLE mint_orders ADD COLUMN IF NOT EXISTS signer TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS collection_alerts (
+  collection TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (collection, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_collection_alerts_created ON collection_alerts(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS meme_orders (
   id BIGSERIAL PRIMARY KEY,
@@ -726,14 +742,20 @@ func (s *Store) LoadSeedFile(ctx context.Context, path string) (int, error) {
 }
 
 type BotSettings struct {
-	MaxSpendWei       string `json:"max_spend_wei"`
-	ExecuteLive       bool   `json:"execute_live"`
-	AutoCopyMint      bool   `json:"auto_copy_mint"`
-	MintQuantity      uint64 `json:"mint_quantity"`
-	MemeMaxSpendWei   string `json:"meme_max_spend_wei"`
-	MemeExecuteLive   bool   `json:"meme_execute_live"`
-	MemeAutoBuy       bool   `json:"meme_auto_buy"`
-	MemeSlippageBps   int    `json:"meme_slippage_bps"`
+	MaxSpendWei          string `json:"max_spend_wei"`
+	ExecuteLive          bool   `json:"execute_live"`
+	AutoCopyMint         bool   `json:"auto_copy_mint"`
+	MintQuantity         uint64 `json:"mint_quantity"`
+	MintMaxWallets       int    `json:"mint_max_wallets"`
+	MintMaxTotal         int    `json:"mint_max_total"`
+	SmartWalletMin       int    `json:"smart_wallet_min"`
+	SmartMintWindowMin   int    `json:"smart_mint_window_min"`
+	SmartBuyWindowMin    int    `json:"smart_buy_window_min"`
+	NewCollectionMaxAgeH int    `json:"new_collection_max_age_h"`
+	MemeMaxSpendWei      string `json:"meme_max_spend_wei"`
+	MemeExecuteLive      bool   `json:"meme_execute_live"`
+	MemeAutoBuy          bool   `json:"meme_auto_buy"`
+	MemeSlippageBps      int    `json:"meme_slippage_bps"`
 }
 
 type MintOrder struct {
@@ -748,6 +770,7 @@ type MintOrder struct {
 	Status       string    `json:"status"`
 	Error        string    `json:"error"`
 	DryRun       bool      `json:"dry_run"`
+	Signer       string    `json:"signer"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 
@@ -771,11 +794,14 @@ func (s *Store) GetSettings(ctx context.Context) (BotSettings, error) {
 	var st BotSettings
 	var qty int64
 	var slip int64
+	var maxWallets, maxTotal, smartMin, mintWin, buyWin, maxAge int64
 	err := s.db.QueryRowContext(ctx, `
 SELECT max_spend_wei::text, execute_live, auto_copy_mint, mint_quantity,
+       mint_max_wallets, mint_max_total, smart_wallet_min, smart_mint_window_min, smart_buy_window_min, new_collection_max_age_h,
        meme_max_spend_wei::text, meme_execute_live, meme_auto_buy, meme_slippage_bps
 FROM bot_settings WHERE id=1
 `).Scan(&st.MaxSpendWei, &st.ExecuteLive, &st.AutoCopyMint, &qty,
+		&maxWallets, &maxTotal, &smartMin, &mintWin, &buyWin, &maxAge,
 		&st.MemeMaxSpendWei, &st.MemeExecuteLive, &st.MemeAutoBuy, &slip)
 	if err != nil {
 		return st, err
@@ -791,6 +817,30 @@ FROM bot_settings WHERE id=1
 	if st.MemeMaxSpendWei == "" {
 		st.MemeMaxSpendWei = "20000000000000000"
 	}
+	if maxWallets <= 0 {
+		maxWallets = 3
+	}
+	if maxTotal <= 0 {
+		maxTotal = 20
+	}
+	if smartMin <= 0 {
+		smartMin = 2
+	}
+	if mintWin <= 0 {
+		mintWin = 120
+	}
+	if buyWin <= 0 {
+		buyWin = 360
+	}
+	if maxAge <= 0 {
+		maxAge = 24
+	}
+	st.MintMaxWallets = int(maxWallets)
+	st.MintMaxTotal = int(maxTotal)
+	st.SmartWalletMin = int(smartMin)
+	st.SmartMintWindowMin = int(mintWin)
+	st.SmartBuyWindowMin = int(buyWin)
+	st.NewCollectionMaxAgeH = int(maxAge)
 	return st, nil
 }
 
@@ -807,19 +857,44 @@ func (s *Store) UpdateSettings(ctx context.Context, st BotSettings) error {
 	if st.MemeSlippageBps <= 0 {
 		st.MemeSlippageBps = 1000
 	}
+	if st.MintMaxWallets <= 0 {
+		st.MintMaxWallets = 3
+	}
+	if st.MintMaxTotal <= 0 {
+		st.MintMaxTotal = 20
+	}
+	if st.SmartWalletMin <= 0 {
+		st.SmartWalletMin = 2
+	}
+	if st.SmartMintWindowMin <= 0 {
+		st.SmartMintWindowMin = 120
+	}
+	if st.SmartBuyWindowMin <= 0 {
+		st.SmartBuyWindowMin = 360
+	}
+	if st.NewCollectionMaxAgeH <= 0 {
+		st.NewCollectionMaxAgeH = 24
+	}
 	_, err := s.db.ExecContext(ctx, `
 UPDATE bot_settings SET
   max_spend_wei=$1,
   execute_live=$2,
   auto_copy_mint=$3,
   mint_quantity=$4,
-  meme_max_spend_wei=$5,
-  meme_execute_live=$6,
-  meme_auto_buy=$7,
-  meme_slippage_bps=$8,
+  mint_max_wallets=$5,
+  mint_max_total=$6,
+  smart_wallet_min=$7,
+  smart_mint_window_min=$8,
+  smart_buy_window_min=$9,
+  new_collection_max_age_h=$10,
+  meme_max_spend_wei=$11,
+  meme_execute_live=$12,
+  meme_auto_buy=$13,
+  meme_slippage_bps=$14,
   updated_at=NOW()
 WHERE id=1
 `, st.MaxSpendWei, st.ExecuteLive, st.AutoCopyMint, st.MintQuantity,
+		st.MintMaxWallets, st.MintMaxTotal, st.SmartWalletMin, st.SmartMintWindowMin, st.SmartBuyWindowMin, st.NewCollectionMaxAgeH,
 		st.MemeMaxSpendWei, st.MemeExecuteLive, st.MemeAutoBuy, st.MemeSlippageBps)
 	return err
 }
@@ -873,13 +948,37 @@ WHERE token = $1 AND dry_run = FALSE AND status IN ('broadcast', 'confirmed')
 
 func (s *Store) InsertOrder(ctx context.Context, o MintOrder) error {
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO mint_orders(source, collection, quantity, value_wei, fee_recipient, signal_tx, tx_hash, status, error, dry_run)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-`, o.Source, o.Collection, o.Quantity, nullWei(o.ValueWei), o.FeeRecipient, o.SignalTx, o.TxHash, o.Status, o.Error, o.DryRun)
+INSERT INTO mint_orders(source, collection, quantity, value_wei, fee_recipient, signal_tx, tx_hash, status, error, dry_run, signer)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+`, o.Source, o.Collection, o.Quantity, nullWei(o.ValueWei), o.FeeRecipient, o.SignalTx, o.TxHash, o.Status, o.Error, o.DryRun, wallet.NormalizeAddress(o.Signer))
 	return err
 }
 
-// HasLiveMintForCollection reports whether we already broadcast a live mint for this collection.
+func (s *Store) HasLiveMintForCollectionWallet(ctx context.Context, collection, signer string) (bool, error) {
+	collection = wallet.NormalizeAddress(collection)
+	signer = wallet.NormalizeAddress(signer)
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM mint_orders
+WHERE collection = $1 AND signer = $2
+  AND dry_run = FALSE
+  AND status IN ('broadcast', 'confirmed')
+`, collection, signer).Scan(&n)
+	return n > 0, err
+}
+
+func (s *Store) SumMintedQuantityForCollection(ctx context.Context, collection string) (int, error) {
+	collection = wallet.NormalizeAddress(collection)
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+SELECT COALESCE(SUM(quantity), 0) FROM mint_orders
+WHERE collection = $1
+  AND status IN ('broadcast', 'confirmed', 'dry_run_ok')
+`, collection).Scan(&n)
+	return n, err
+}
+
+// HasLiveMintForCollection reports whether we already broadcast a live mint for this collection (any signer).
 func (s *Store) HasLiveMintForCollection(ctx context.Context, collection string) (bool, error) {
 	collection = wallet.NormalizeAddress(collection)
 	var n int
@@ -890,6 +989,59 @@ WHERE collection = $1
   AND status IN ('broadcast', 'confirmed')
 `, collection).Scan(&n)
 	return n > 0, err
+}
+
+func (s *Store) CountDistinctWatchedActors(ctx context.Context, collection string, sides []string, window time.Duration) (int, error) {
+	collection = wallet.NormalizeAddress(collection)
+	if window <= 0 {
+		window = 2 * time.Hour
+	}
+	_ = sides // always mint+buy consensus across both paths
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(DISTINCT t.wallet) FROM nft_trades t
+INNER JOIN wallets w ON w.address = t.wallet AND w.active = TRUE AND w.source IN ('curated','discovered')
+WHERE t.collection = $1
+  AND t.side IN ('mint', 'buy')
+  AND t.created_at >= NOW() - ($2 * INTERVAL '1 second')
+`, collection, int64(window.Seconds())).Scan(&n)
+	return n, err
+}
+
+func (s *Store) FirstWatchedActivityAt(ctx context.Context, collection string, sides []string) (*time.Time, error) {
+	collection = wallet.NormalizeAddress(collection)
+	_ = sides
+	var t sql.NullTime
+	err := s.db.QueryRowContext(ctx, `
+SELECT MIN(t.created_at) FROM nft_trades t
+INNER JOIN wallets w ON w.address = t.wallet AND w.active = TRUE AND w.source IN ('curated','discovered')
+WHERE t.collection = $1 AND t.side IN ('mint', 'buy')
+`, collection).Scan(&t)
+	if err != nil {
+		return nil, err
+	}
+	if !t.Valid {
+		return nil, nil
+	}
+	tt := t.Time
+	return &tt, nil
+}
+
+func (s *Store) TryMarkCollectionAlert(ctx context.Context, collection, kind string) (bool, error) {
+	collection = wallet.NormalizeAddress(collection)
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if collection == "" || kind == "" {
+		return false, nil
+	}
+	res, err := s.db.ExecContext(ctx, `
+INSERT INTO collection_alerts(collection, kind) VALUES ($1,$2)
+ON CONFLICT (collection, kind) DO NOTHING
+`, collection, kind)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // HasProcessedSignalTx reports whether a copy-mint signal was already handled (any outcome that consumed it).
@@ -919,7 +1071,7 @@ func (s *Store) ListOrders(ctx context.Context, limit int) ([]MintOrder, error) 
 		limit = 50
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, source, collection, quantity, value_wei::text, fee_recipient, signal_tx, tx_hash, status, error, dry_run, created_at
+SELECT id, source, collection, quantity, value_wei::text, fee_recipient, signal_tx, tx_hash, status, error, dry_run, COALESCE(signer,''), created_at
 FROM mint_orders ORDER BY created_at DESC LIMIT $1
 `, limit)
 	if err != nil {
@@ -929,7 +1081,7 @@ FROM mint_orders ORDER BY created_at DESC LIMIT $1
 	var out []MintOrder
 	for rows.Next() {
 		var o MintOrder
-		if err := rows.Scan(&o.ID, &o.Source, &o.Collection, &o.Quantity, &o.ValueWei, &o.FeeRecipient, &o.SignalTx, &o.TxHash, &o.Status, &o.Error, &o.DryRun, &o.CreatedAt); err != nil {
+		if err := rows.Scan(&o.ID, &o.Source, &o.Collection, &o.Quantity, &o.ValueWei, &o.FeeRecipient, &o.SignalTx, &o.TxHash, &o.Status, &o.Error, &o.DryRun, &o.Signer, &o.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, o)

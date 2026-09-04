@@ -324,18 +324,16 @@ func (w *Watcher) handleLogs(ctx context.Context, logs []types.Log) error {
 			"tx", ev.TxHash.Hex(),
 		)
 
-		if w.telegram != nil && w.telegram.Enabled() {
+		// Telegram only via priority escalator (2+ smart wallets). Sell alerts stay env-gated off.
+		if action == classify.ActionSell && w.alertOnSell && w.telegram != nil && w.telegram.Enabled() {
 			if err := w.telegram.Send(ctx, alert.Payload{
-				Wallet:     rec,
-				Event:      ev,
-				Action:     action,
-				Collection: name,
+				Wallet: rec, Event: ev, Action: action, Collection: name,
 			}); err != nil {
 				w.log.Error("telegram send failed", "err", err, "tx", ev.TxHash.Hex())
 			}
 		}
 
-		if action == classify.ActionMint && w.onMint != nil {
+		if (action == classify.ActionMint || action == classify.ActionBuy) && w.onMint != nil {
 			w.onMint(ev.Collection, matched, rec.Label, ev.TxHash.Hex())
 		}
 	}

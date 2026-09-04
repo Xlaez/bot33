@@ -68,6 +68,12 @@ export type Settings = {
   execute_live: boolean;
   auto_copy_mint: boolean;
   mint_quantity: number;
+  mint_max_wallets?: number;
+  mint_max_total?: number;
+  smart_wallet_min?: number;
+  smart_mint_window_min?: number;
+  smart_buy_window_min?: number;
+  new_collection_max_age_h?: number;
   meme_max_spend_wei?: string;
   meme_max_spend_eth?: string;
   meme_execute_live?: boolean;
@@ -75,6 +81,8 @@ export type Settings = {
   meme_slippage_bps?: number;
   has_signer?: boolean;
   signer_address?: string;
+  signer_addresses?: string[];
+  signer_count?: number;
 };
 
 export type MintOrder = {
@@ -89,6 +97,7 @@ export type MintOrder = {
   status: string;
   error: string;
   dry_run: boolean;
+  signer?: string;
   created_at: string;
 };
 
@@ -165,7 +174,7 @@ export const api = {
   saveSettings: (body: Partial<Settings> & { max_spend_eth?: string; meme_max_spend_eth?: string }) =>
     req<Settings>("/settings", { method: "PUT", body: JSON.stringify(body) }),
   orders: (limit = 50) => req<MintOrder[]>(`/orders?limit=${limit}`),
-  mint: (body: { collection: string; quantity?: number }) =>
+  mint: (body: { collection: string; quantity?: number; wallet_count?: number; sweep?: boolean }) =>
     req<{ queued: boolean }>("/mint", { method: "POST", body: JSON.stringify(body) }),
   memes: (limit = 100) => req<MemeToken[]>(`/memes?limit=${limit}`),
   memeStats: () => req<MemeStats>("/memes/stats"),

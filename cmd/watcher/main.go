@@ -17,6 +17,7 @@ import (
 	"github.com/xlaez/bot33/internal/execute"
 	"github.com/xlaez/bot33/internal/ingest"
 	"github.com/xlaez/bot33/internal/marketplace"
+	"github.com/xlaez/bot33/internal/nftgate"
 	"github.com/xlaez/bot33/internal/store"
 )
 
@@ -79,25 +80,17 @@ func main() {
 
 	tg := alert.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID)
 	en := enrich.New(client.HTTP)
-	engine, err := execute.New(client.HTTP, st, log, tg, cfg.ExecutorPrivateKey, cfg.ChainID)
+	engine, err := execute.NewMulti(client.HTTP, st, log, tg, cfg.ExecutorPrivateKeys, cfg.ChainID)
 	if err != nil {
 		log.Error("executor", "err", err)
 		os.Exit(1)
 	}
+	gate := nftgate.New(client.HTTP, st, log, tg, en, func(collection common.Address, quantity uint64, walletCount int, signalTx, label string) {
+		engine.EnqueueSweep(collection, quantity, walletCount, signalTx, label)
+	})
 	watcher := ingest.New(client.HTTP, st, en, tg, log, cfg.AlertOnSell, cfg.LogPollInterval, cfg.StartBlockLag)
 	watcher.SetOnMint(func(collection common.Address, walletAddr, label, txHash string) {
-		settings, err := st.GetSettings(ctx)
-		if err != nil || !settings.AutoCopyMint {
-			return
-		}
-		log.Info("copy-mint signal", "collection", collection.Hex(), "wallet", walletAddr, "tx", txHash)
-		engine.Enqueue(execute.Job{
-			Source:     "copy",
-			Collection: collection,
-			Quantity:   settings.MintQuantity,
-			SignalTx:   txHash,
-			Label:      label,
-		})
+		gate.HandleMint(ctx, collection, walletAddr, label, txHash)
 	})
 	scorer := discover.New(st, log, discover.Options{
 		MinScore:  cfg.DiscoveryMinScore,
@@ -117,6 +110,7 @@ func main() {
 		HeatMinSales:    cfg.AlertHeatMinSales,
 		PremiumMultiple: cfg.AlertPremiumMultiple,
 	})
+	mkt.SetEscalator(gate)
 
 	errCh := make(chan error, 4)
 	go func() { errCh <- watcher.Run(ctx) }()
@@ -129,12 +123,14 @@ func main() {
 		"telegram", tg.Enabled(),
 		"poll", cfg.LogPollInterval.String(),
 		"executor", engine.HasSigner(),
+		"signers", engine.SignerCount(),
 		"signer", engine.SignerAddress(),
 		"discovery_window", cfg.DiscoveryWindow.String(),
 		"discovery_top_n", cfg.DiscoveryTopN,
 		"marketplace", cfg.MarketplaceEnabled,
 		"notify_min_score", cfg.AlertNotifyMinScore,
 		"heat_window", cfg.AlertHeatWindow.String(),
+		"alert_on_sell", cfg.AlertOnSell,
 	)
 	select {
 	case <-ctx.Done():

@@ -47,7 +47,11 @@ func main() {
 	defer client.Close()
 
 	tg := alert.NewTelegram(cfg.TelegramBotToken, cfg.TelegramMemeChatID)
-	buyer, err := meme.NewBuyer(client.HTTP, st, log, tg, cfg.ExecutorPrivateKey, cfg.ChainID)
+	memeKey := cfg.ExecutorPrivateKey
+	if memeKey == "" && len(cfg.ExecutorPrivateKeys) > 0 {
+		memeKey = cfg.ExecutorPrivateKeys[0]
+	}
+	buyer, err := meme.NewBuyer(client.HTTP, st, log, tg, memeKey, cfg.ChainID)
 	if err != nil {
 		log.Error("meme buyer", "err", err)
 		os.Exit(1)

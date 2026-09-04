@@ -21,28 +21,40 @@ import (
 )
 
 type SettingsView struct {
-	MaxSpendWei     string `json:"max_spend_wei"`
-	MaxSpendETH     string `json:"max_spend_eth"`
-	ExecuteLive     bool   `json:"execute_live"`
-	AutoCopyMint    bool   `json:"auto_copy_mint"`
-	MintQuantity    uint64 `json:"mint_quantity"`
-	MemeMaxSpendWei string `json:"meme_max_spend_wei"`
-	MemeMaxSpendETH string `json:"meme_max_spend_eth"`
-	MemeExecuteLive bool   `json:"meme_execute_live"`
-	MemeAutoBuy     bool   `json:"meme_auto_buy"`
-	MemeSlippageBps int    `json:"meme_slippage_bps"`
-	HasSigner       bool   `json:"has_signer"`
-	SignerAddress   string `json:"signer_address,omitempty"`
+	MaxSpendWei          string   `json:"max_spend_wei"`
+	MaxSpendETH          string   `json:"max_spend_eth"`
+	ExecuteLive          bool     `json:"execute_live"`
+	AutoCopyMint         bool     `json:"auto_copy_mint"`
+	MintQuantity         uint64   `json:"mint_quantity"`
+	MintMaxWallets       int      `json:"mint_max_wallets"`
+	MintMaxTotal         int      `json:"mint_max_total"`
+	SmartWalletMin       int      `json:"smart_wallet_min"`
+	SmartMintWindowMin   int      `json:"smart_mint_window_min"`
+	SmartBuyWindowMin    int      `json:"smart_buy_window_min"`
+	NewCollectionMaxAgeH int      `json:"new_collection_max_age_h"`
+	MemeMaxSpendWei      string   `json:"meme_max_spend_wei"`
+	MemeMaxSpendETH      string   `json:"meme_max_spend_eth"`
+	MemeExecuteLive      bool     `json:"meme_execute_live"`
+	MemeAutoBuy          bool     `json:"meme_auto_buy"`
+	MemeSlippageBps      int      `json:"meme_slippage_bps"`
+	HasSigner            bool     `json:"has_signer"`
+	SignerAddress        string   `json:"signer_address,omitempty"`
+	SignerAddresses      []string `json:"signer_addresses,omitempty"`
+	SignerCount          int      `json:"signer_count"`
+}
+
+type signer struct {
+	key  *ecdsa.PrivateKey
+	from common.Address
 }
 
 type Engine struct {
-	client *ethclient.Client
-	store  *store.Store
-	log    *slog.Logger
-	tg     *alert.Telegram
-	key    *ecdsa.PrivateKey
-	from   common.Address
-	chain  *big.Int
+	client  *ethclient.Client
+	store   *store.Store
+	log     *slog.Logger
+	tg      *alert.Telegram
+	signers []signer
+	chain   *big.Int
 
 	mu       sync.Mutex
 	queue    chan Job
@@ -50,14 +62,20 @@ type Engine struct {
 }
 
 type Job struct {
-	Source     string // copy|manual
-	Collection common.Address
-	Quantity   uint64
-	SignalTx   string
-	Label      string
+	Source      string // copy|manual|sweep
+	Collection  common.Address
+	Quantity    uint64
+	WalletCount int
+	SignalTx    string
+	Label       string
+	FreeOnly    bool
 }
 
 func New(client *ethclient.Client, st *store.Store, log *slog.Logger, tg *alert.Telegram, privateKeyHex string, chainID int64) (*Engine, error) {
+	return NewMulti(client, st, log, tg, []string{privateKeyHex}, chainID)
+}
+
+func NewMulti(client *ethclient.Client, st *store.Store, log *slog.Logger, tg *alert.Telegram, privateKeyHexes []string, chainID int64) (*Engine, error) {
 	e := &Engine{
 		client:   client,
 		store:    st,
@@ -67,30 +85,51 @@ func New(client *ethclient.Client, st *store.Store, log *slog.Logger, tg *alert.
 		queue:    make(chan Job, 64),
 		inflight: map[string]struct{}{},
 	}
-	pk := strings.TrimSpace(privateKeyHex)
-	if pk != "" {
+	seen := map[string]struct{}{}
+	for _, raw := range privateKeyHexes {
+		pk := strings.TrimSpace(raw)
+		if pk == "" {
+			continue
+		}
 		if strings.HasPrefix(pk, "0x") || strings.HasPrefix(pk, "0X") {
 			pk = pk[2:]
 		}
 		key, err := crypto.HexToECDSA(pk)
 		if err != nil {
-			return nil, fmt.Errorf("EXECUTOR_PRIVATE_KEY: %w", err)
+			return nil, fmt.Errorf("executor private key: %w", err)
 		}
-		e.key = key
-		e.from = crypto.PubkeyToAddress(key.PublicKey)
+		from := crypto.PubkeyToAddress(key.PublicKey)
+		addr := strings.ToLower(from.Hex())
+		if _, ok := seen[addr]; ok {
+			continue
+		}
+		seen[addr] = struct{}{}
+		e.signers = append(e.signers, signer{key: key, from: from})
 	}
 	return e, nil
 }
 
 func (e *Engine) HasSigner() bool {
-	return e.key != nil
+	return len(e.signers) > 0
+}
+
+func (e *Engine) SignerCount() int {
+	return len(e.signers)
 }
 
 func (e *Engine) SignerAddress() string {
-	if e.key == nil {
+	if len(e.signers) == 0 {
 		return ""
 	}
-	return e.from.Hex()
+	return e.signers[0].from.Hex()
+}
+
+func (e *Engine) SignerAddresses() []string {
+	out := make([]string, 0, len(e.signers))
+	for _, s := range e.signers {
+		out = append(out, s.from.Hex())
+	}
+	return out
 }
 
 func (e *Engine) Enqueue(job Job) {
@@ -99,6 +138,18 @@ func (e *Engine) Enqueue(job Job) {
 	default:
 		e.log.Warn("execution queue full, dropping job", "collection", job.Collection.Hex(), "source", job.Source)
 	}
+}
+
+func (e *Engine) EnqueueSweep(collection common.Address, quantity uint64, walletCount int, signalTx, label string) {
+	e.Enqueue(Job{
+		Source:      "sweep",
+		Collection:  collection,
+		Quantity:    quantity,
+		WalletCount: walletCount,
+		SignalTx:    signalTx,
+		Label:       label,
+		FreeOnly:    true,
+	})
 }
 
 func (e *Engine) Run(ctx context.Context) error {
@@ -128,7 +179,6 @@ func (e *Engine) handle(ctx context.Context, job Job) error {
 	}
 	collection := strings.ToLower(job.Collection.Hex())
 
-	// Same signal tx (copy) must only run once.
 	if job.SignalTx != "" {
 		done, err := e.store.HasProcessedSignalTx(ctx, job.SignalTx)
 		if err != nil {
@@ -136,112 +186,158 @@ func (e *Engine) handle(ctx context.Context, job Job) error {
 		}
 		if done {
 			_ = e.store.InsertOrder(ctx, store.MintOrder{
-				Source:     job.Source,
-				Collection: collection,
-				Quantity:   qty,
-				Status:     "skipped_duplicate",
-				Error:      "signal tx already processed",
-				SignalTx:   job.SignalTx,
-				DryRun:     !settings.ExecuteLive,
+				Source: job.Source, Collection: collection, Quantity: qty,
+				Status: "skipped_duplicate", Error: "signal tx already processed",
+				SignalTx: job.SignalTx, DryRun: !settings.ExecuteLive,
 			})
-			e.log.Info("skip duplicate signal", "tx", job.SignalTx, "collection", collection)
 			return nil
 		}
 	}
 
-	// Never live-mint the same collection twice.
-	if settings.ExecuteLive {
-		already, err := e.store.HasLiveMintForCollection(ctx, collection)
-		if err != nil {
-			return err
-		}
-		if already {
-			_ = e.store.InsertOrder(ctx, store.MintOrder{
-				Source:     job.Source,
-				Collection: collection,
-				Quantity:   qty,
-				Status:     "skipped_duplicate",
-				Error:      "collection already minted live",
-				SignalTx:   job.SignalTx,
-				DryRun:     false,
-			})
-			e.log.Warn("skip duplicate collection mint", "collection", collection)
-			return nil
-		}
-	}
-
-	// In-process lock so concurrent queue jobs cannot double-broadcast one collection.
-	if !e.tryLockCollection(collection) {
+	lockKey := collection + ":" + job.Source
+	if !e.tryLockCollection(lockKey) {
 		_ = e.store.InsertOrder(ctx, store.MintOrder{
-			Source:     job.Source,
-			Collection: collection,
-			Quantity:   qty,
-			Status:     "skipped_duplicate",
-			Error:      "collection mint already in flight",
-			SignalTx:   job.SignalTx,
-			DryRun:     !settings.ExecuteLive,
+			Source: job.Source, Collection: collection, Quantity: qty,
+			Status: "skipped_duplicate", Error: "collection mint already in flight",
+			SignalTx: job.SignalTx, DryRun: !settings.ExecuteLive,
 		})
 		return nil
 	}
-	defer e.unlockCollection(collection)
+	defer e.unlockCollection(lockKey)
 
-	plan, err := seadrop.BuildPlan(ctx, e.client, job.Collection, qty)
+	planProbe, err := seadrop.BuildPlan(ctx, e.client, job.Collection, qty)
 	if err != nil {
 		_ = e.store.InsertOrder(ctx, store.MintOrder{
-			Source:     job.Source,
-			Collection: strings.ToLower(job.Collection.Hex()),
-			Quantity:   qty,
-			Status:     "rejected",
-			Error:      err.Error(),
-			SignalTx:   job.SignalTx,
-			DryRun:     !settings.ExecuteLive,
+			Source: job.Source, Collection: collection, Quantity: qty,
+			Status: "rejected", Error: err.Error(), SignalTx: job.SignalTx, DryRun: !settings.ExecuteLive,
 		})
 		return err
+	}
+	if job.FreeOnly || job.Source == "copy" || job.Source == "sweep" {
+		if !planProbe.Drop.IsFree() || !planProbe.Drop.IsOpen(0) {
+			_ = e.store.InsertOrder(ctx, store.MintOrder{
+				Source: job.Source, Collection: collection, Quantity: qty,
+				Status: "rejected", Error: "not an open free SeaDrop mint",
+				SignalTx: job.SignalTx, DryRun: !settings.ExecuteLive,
+			})
+			return fmt.Errorf("not an open free SeaDrop mint")
+		}
 	}
 
 	maxSpend, ok := new(big.Int).SetString(settings.MaxSpendWei, 10)
 	if !ok || maxSpend.Sign() <= 0 {
 		return fmt.Errorf("invalid max_spend_wei")
 	}
-	if plan.Value.Cmp(maxSpend) > 0 {
-		msg := fmt.Sprintf("mint value %s wei exceeds max spend %s wei", plan.Value.String(), maxSpend.String())
+	if planProbe.Value.Cmp(maxSpend) > 0 {
+		msg := fmt.Sprintf("mint value %s wei exceeds max spend %s wei", planProbe.Value.String(), maxSpend.String())
 		_ = e.store.InsertOrder(ctx, store.MintOrder{
-			Source:     job.Source,
-			Collection: strings.ToLower(job.Collection.Hex()),
-			Quantity:   qty,
-			ValueWei:   plan.Value.String(),
-			Status:     "capped",
-			Error:      msg,
-			SignalTx:   job.SignalTx,
-			DryRun:     !settings.ExecuteLive,
+			Source: job.Source, Collection: collection, Quantity: qty, ValueWei: planProbe.Value.String(),
+			Status: "capped", Error: msg, SignalTx: job.SignalTx, DryRun: !settings.ExecuteLive,
 		})
-		e.log.Warn("spend cap blocked mint", "value", plan.Value.String(), "cap", maxSpend.String())
 		return fmt.Errorf("%s", msg)
 	}
 
-	live := settings.ExecuteLive && e.key != nil
-	order := store.MintOrder{
-		Source:       job.Source,
-		Collection:   strings.ToLower(job.Collection.Hex()),
-		Quantity:     qty,
-		ValueWei:     plan.Value.String(),
-		FeeRecipient: strings.ToLower(plan.FeeRecipient.Hex()),
-		SignalTx:     job.SignalTx,
-		DryRun:       !live,
-		Status:       "planned",
+	walletCount := job.WalletCount
+	if walletCount <= 0 {
+		walletCount = settings.MintMaxWallets
+	}
+	if walletCount <= 0 {
+		walletCount = 1
+	}
+	if walletCount > len(e.signers) {
+		if len(e.signers) == 0 {
+			walletCount = 1
+		} else {
+			walletCount = len(e.signers)
+		}
+	}
+	maxTotal := settings.MintMaxTotal
+	if maxTotal <= 0 {
+		maxTotal = 20
+	}
+	alreadyQty, _ := e.store.SumMintedQuantityForCollection(ctx, collection)
+	remaining := maxTotal - alreadyQty
+	if remaining <= 0 {
+		_ = e.store.InsertOrder(ctx, store.MintOrder{
+			Source: job.Source, Collection: collection, Quantity: qty,
+			Status: "capped", Error: fmt.Sprintf("mint_max_total %d reached", maxTotal),
+			SignalTx: job.SignalTx, DryRun: !settings.ExecuteLive,
+		})
+		return fmt.Errorf("mint_max_total reached")
 	}
 
+	signers := e.signers
+	if len(signers) == 0 {
+		signers = []signer{{}} // dry-run placeholder
+	}
+	if walletCount > len(signers) {
+		walletCount = len(signers)
+	}
+
+	var lastErr error
+	minted := 0
+	for i := 0; i < walletCount && remaining > 0; i++ {
+		sg := signers[i]
+		useQty := qty
+		if int(useQty) > remaining {
+			useQty = uint64(remaining)
+		}
+		if useQty == 0 {
+			break
+		}
+		if settings.ExecuteLive && sg.key != nil {
+			done, err := e.store.HasLiveMintForCollectionWallet(ctx, collection, sg.from.Hex())
+			if err != nil {
+				return err
+			}
+			if done {
+				_ = e.store.InsertOrder(ctx, store.MintOrder{
+					Source: job.Source, Collection: collection, Quantity: useQty,
+					Status: "skipped_duplicate", Error: "signer already minted live",
+					SignalTx: job.SignalTx, DryRun: false, Signer: sg.from.Hex(),
+				})
+				continue
+			}
+		}
+		if err := e.mintOne(ctx, job, settings, sg, useQty, planProbe); err != nil {
+			lastErr = err
+			e.log.Error("mint wallet failed", "err", err, "signer", sg.from.Hex())
+			continue
+		}
+		minted++
+		remaining -= int(useQty)
+	}
+	if minted == 0 && lastErr != nil {
+		return lastErr
+	}
+	return nil
+}
+
+func (e *Engine) mintOne(ctx context.Context, job Job, settings store.BotSettings, sg signer, qty uint64, probe *seadrop.Plan) error {
+	plan := probe
+	if qty != probe.Quantity {
+		var err error
+		plan, err = seadrop.BuildPlan(ctx, e.client, job.Collection, qty)
+		if err != nil {
+			return err
+		}
+	}
+	live := settings.ExecuteLive && sg.key != nil
+	signerAddr := ""
+	if sg.key != nil {
+		signerAddr = sg.from.Hex()
+	}
+	order := store.MintOrder{
+		Source: job.Source, Collection: strings.ToLower(job.Collection.Hex()), Quantity: qty,
+		ValueWei: plan.Value.String(), FeeRecipient: strings.ToLower(plan.FeeRecipient.Hex()),
+		SignalTx: job.SignalTx, DryRun: !live, Status: "planned", Signer: signerAddr,
+	}
+	from := sg.from
+	if sg.key == nil {
+		from = common.HexToAddress("0x0000000000000000000000000000000000000001")
+	}
 	if !live {
-		// eth_call simulation
-		msg := ethereum.CallMsg{
-			From:  e.from,
-			To:    &plan.To,
-			Value: plan.Value,
-			Data:  plan.Data,
-		}
-		if e.key == nil {
-			msg.From = common.HexToAddress("0x0000000000000000000000000000000000000001")
-		}
+		msg := ethereum.CallMsg{From: from, To: &plan.To, Value: plan.Value, Data: plan.Data}
 		_, callErr := e.client.CallContract(ctx, msg, nil)
 		if callErr != nil {
 			order.Status = "dry_run_failed"
@@ -251,12 +347,11 @@ func (e *Engine) handle(ctx context.Context, job Job) error {
 		}
 		order.Status = "dry_run_ok"
 		_ = e.store.InsertOrder(ctx, order)
-		e.log.Info("dry-run mint ok", "collection", job.Collection.Hex(), "value_wei", plan.Value.String(), "qty", qty, "source", job.Source)
-		e.notify(fmt.Sprintf("[DRY-RUN OK] %s mint x%d\ncollection: %s\nvalue: %s wei\nsource: %s", job.Label, qty, job.Collection.Hex(), plan.Value.String(), job.Source))
+		e.log.Info("dry-run mint ok", "collection", job.Collection.Hex(), "qty", qty, "signer", signerAddr, "source", job.Source)
+		e.notify(fmt.Sprintf("[DRY-RUN OK] %s mint x%d\ncollection: %s\nsigner: %s\nsource: %s", job.Label, qty, job.Collection.Hex(), signerAddr, job.Source))
 		return nil
 	}
-
-	txHash, err := e.sendMint(ctx, plan)
+	txHash, err := e.sendMint(ctx, sg, plan)
 	if err != nil {
 		order.Status = "broadcast_failed"
 		order.Error = err.Error()
@@ -266,19 +361,19 @@ func (e *Engine) handle(ctx context.Context, job Job) error {
 	order.Status = "broadcast"
 	order.TxHash = txHash
 	_ = e.store.InsertOrder(ctx, order)
-	e.log.Info("mint broadcast", "tx", txHash, "collection", job.Collection.Hex(), "value_wei", plan.Value.String())
-	e.notify(fmt.Sprintf("[LIVE] mint broadcast x%d\ncollection: %s\ntx: https://robinhoodchain.blockscout.com/tx/%s", qty, job.Collection.Hex(), txHash))
+	e.log.Info("mint broadcast", "tx", txHash, "collection", job.Collection.Hex(), "signer", signerAddr)
+	e.notify(fmt.Sprintf("[LIVE] mint broadcast x%d\ncollection: %s\nsigner: %s\ntx: https://robinhoodchain.blockscout.com/tx/%s", qty, job.Collection.Hex(), signerAddr, txHash))
 	return nil
 }
 
-func (e *Engine) sendMint(ctx context.Context, plan *seadrop.Plan) (string, error) {
-	nonce, err := e.client.PendingNonceAt(ctx, e.from)
+func (e *Engine) sendMint(ctx context.Context, sg signer, plan *seadrop.Plan) (string, error) {
+	nonce, err := e.client.PendingNonceAt(ctx, sg.from)
 	if err != nil {
 		return "", err
 	}
 	tip, err := e.client.SuggestGasTipCap(ctx)
 	if err != nil {
-		tip = big.NewInt(1_000_000) // 0.001 gwei fallback
+		tip = big.NewInt(1_000_000)
 	}
 	header, err := e.client.HeaderByNumber(ctx, nil)
 	if err != nil {
@@ -291,22 +386,16 @@ func (e *Engine) sendMint(ctx context.Context, plan *seadrop.Plan) (string, erro
 	maxFee := new(big.Int).Add(new(big.Int).Mul(base, big.NewInt(2)), tip)
 	gasLimit := uint64(300_000)
 	if est, err := e.client.EstimateGas(ctx, ethereum.CallMsg{
-		From: e.from, To: &plan.To, Value: plan.Value, Data: plan.Data,
+		From: sg.from, To: &plan.To, Value: plan.Value, Data: plan.Data,
 	}); err == nil && est > 0 {
 		gasLimit = est + est/5
 	}
 	tx := types.NewTx(&types.DynamicFeeTx{
-		ChainID:   e.chain,
-		Nonce:     nonce,
-		GasTipCap: tip,
-		GasFeeCap: maxFee,
-		Gas:       gasLimit,
-		To:        &plan.To,
-		Value:     plan.Value,
-		Data:      plan.Data,
+		ChainID: e.chain, Nonce: nonce, GasTipCap: tip, GasFeeCap: maxFee,
+		Gas: gasLimit, To: &plan.To, Value: plan.Value, Data: plan.Data,
 	})
 	signer := types.LatestSignerForChainID(e.chain)
-	signed, err := types.SignTx(tx, signer, e.key)
+	signed, err := types.SignTx(tx, signer, sg.key)
 	if err != nil {
 		return "", err
 	}
@@ -343,7 +432,13 @@ func (e *Engine) notify(msg string) {
 
 func (e *Engine) ManualMint(ctx context.Context, collection string, quantity uint64) error {
 	addr := common.HexToAddress(collection)
-	e.Enqueue(Job{Source: "manual", Collection: addr, Quantity: quantity, Label: "manual"})
+	e.Enqueue(Job{Source: "manual", Collection: addr, Quantity: quantity, WalletCount: 1, Label: "manual"})
+	return nil
+}
+
+func (e *Engine) ManualSweep(ctx context.Context, collection string, quantity uint64, walletCount int) error {
+	addr := common.HexToAddress(collection)
+	e.Enqueue(Job{Source: "sweep", Collection: addr, Quantity: quantity, WalletCount: walletCount, Label: "manual-sweep", FreeOnly: true})
 	return nil
 }
 
@@ -364,18 +459,15 @@ func (e *Engine) SettingsView(ctx context.Context) (SettingsView, error) {
 		f := new(big.Float).Quo(new(big.Float).SetInt(mwei), big.NewFloat(1e18))
 		meth = f.Text('f', 6)
 	}
+	addrs := e.SignerAddresses()
 	return SettingsView{
-		MaxSpendWei:     s.MaxSpendWei,
-		MaxSpendETH:     eth,
-		ExecuteLive:     s.ExecuteLive,
-		AutoCopyMint:    s.AutoCopyMint,
-		MintQuantity:    s.MintQuantity,
-		MemeMaxSpendWei: s.MemeMaxSpendWei,
-		MemeMaxSpendETH: meth,
-		MemeExecuteLive: s.MemeExecuteLive,
-		MemeAutoBuy:     s.MemeAutoBuy,
-		MemeSlippageBps: s.MemeSlippageBps,
-		HasSigner:       e.HasSigner(),
-		SignerAddress:   e.SignerAddress(),
+		MaxSpendWei: s.MaxSpendWei, MaxSpendETH: eth, ExecuteLive: s.ExecuteLive,
+		AutoCopyMint: s.AutoCopyMint, MintQuantity: s.MintQuantity,
+		MintMaxWallets: s.MintMaxWallets, MintMaxTotal: s.MintMaxTotal,
+		SmartWalletMin: s.SmartWalletMin, SmartMintWindowMin: s.SmartMintWindowMin,
+		SmartBuyWindowMin: s.SmartBuyWindowMin, NewCollectionMaxAgeH: s.NewCollectionMaxAgeH,
+		MemeMaxSpendWei: s.MemeMaxSpendWei, MemeMaxSpendETH: meth,
+		MemeExecuteLive: s.MemeExecuteLive, MemeAutoBuy: s.MemeAutoBuy, MemeSlippageBps: s.MemeSlippageBps,
+		HasSigner: e.HasSigner(), SignerAddress: e.SignerAddress(), SignerAddresses: addrs, SignerCount: len(addrs),
 	}, nil
 }

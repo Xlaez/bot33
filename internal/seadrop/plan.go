@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -32,6 +33,26 @@ type PublicDrop struct {
 	MaxTotalMintableByWallet uint16
 	FeeBps                   uint16
 	RestrictFeeRecipients    bool
+}
+
+func (d *PublicDrop) IsFree() bool {
+	return d != nil && d.MintPrice != nil && d.MintPrice.Sign() == 0
+}
+
+func (d *PublicDrop) IsOpen(now uint64) bool {
+	if d == nil {
+		return false
+	}
+	if now == 0 {
+		now = uint64(time.Now().Unix())
+	}
+	if d.StartTime > 0 && now < d.StartTime {
+		return false
+	}
+	if d.EndTime > 0 && now > d.EndTime {
+		return false
+	}
+	return d.StartTime > 0 || d.EndTime > 0 || d.MaxTotalMintableByWallet > 0
 }
 
 type Plan struct {

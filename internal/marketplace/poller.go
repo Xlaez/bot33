@@ -15,6 +15,7 @@ import (
 	"github.com/xlaez/bot33/internal/alert"
 	"github.com/xlaez/bot33/internal/chain"
 	"github.com/xlaez/bot33/internal/enrich"
+	"github.com/xlaez/bot33/internal/nftgate"
 	"github.com/xlaez/bot33/internal/seaport"
 	"github.com/xlaez/bot33/internal/signal"
 	"github.com/xlaez/bot33/internal/store"
@@ -44,6 +45,7 @@ type Poller struct {
 	address  common.Address
 	opts     Options
 	minWei   *big.Int
+	gate     *nftgate.Escalator
 
 	mu     sync.RWMutex
 	watch  map[string]wallet.Record
@@ -91,6 +93,10 @@ func New(
 		watch:    map[string]wallet.Record{},
 		colls:    map[string]store.Collection{},
 	}
+}
+
+func (p *Poller) SetEscalator(gate *nftgate.Escalator) {
+	p.gate = gate
 }
 
 func (p *Poller) reload(ctx context.Context) error {
@@ -293,11 +299,34 @@ func (p *Poller) decideAndAlert(ctx context.Context, sale *seaport.Sale) (int, e
 	seller, sellerWatched := p.lookupWallet(sale.Seller)
 
 	sent := 0
+
+	// 2+ smart wallets on same collection = priority (bypass score/heat).
+	if buyerWatched && p.gate != nil {
+		label := buyer.Label
+		if label == "" {
+			label = wallet.NormalizeAddress(sale.Buyer.Hex())
+		}
+		if p.gate.HandleSecondary(ctx, sale.Collection, sale.Buyer.Hex(), label, sale.TxHash.Hex()) {
+			sent++
+			_, tracked = p.trackedCollection(sale.Collection)
+			if !tracked {
+				p.mu.Lock()
+				p.colls[wallet.NormalizeAddress(sale.Collection.Hex())] = store.Collection{
+					Address: wallet.NormalizeAddress(sale.Collection.Hex()),
+					Source:  "hot",
+					Active:  true,
+				}
+				p.mu.Unlock()
+				tracked = true
+			}
+		}
+	}
+
+	// Market heat/premium only — do not alert on single watched buyer alone.
 	buyDec := signal.Evaluate(signal.Input{
 		Side:            "buy",
 		PriceWei:        sale.PriceWei,
-		BuyerWatched:    buyerWatched,
-		BuyerSource:     buyer.Source,
+		BuyerWatched:    false,
 		TrackedColl:     tracked,
 		CollStats:       stats,
 		MinPriceWei:     p.minWei,
@@ -311,7 +340,6 @@ func (p *Poller) decideAndAlert(ctx context.Context, sale *seaport.Sale) (int, e
 		} else {
 			sent++
 		}
-		// Auto-track hot collections so future sales inherit COLLECTION boost.
 		if !tracked && (containsReason(buyDec.Reasons, "heat") || containsReason(buyDec.Reasons, "heat-surge")) {
 			name := ""
 			if p.enricher != nil {
