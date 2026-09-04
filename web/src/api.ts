@@ -87,6 +87,41 @@ export type MintOrder = {
   created_at: string;
 };
 
+export type MemeToken = {
+  address: string;
+  symbol: string;
+  name: string;
+  decimals: number;
+  paired_with: string;
+  pool_address: string;
+  dex: string;
+  fee_tier: number;
+  launch_tx: string;
+  launch_block: number;
+  first_liquidity_at?: string;
+  lp_locked: boolean;
+  lp_lock_pct: number;
+  lp_lock_evidence: string;
+  owner_renounced: boolean;
+  score: number;
+  flags: string[];
+  status: string;
+  volume_wei: string;
+  swap_count: number;
+  unique_traders: number;
+  last_swap_at?: string;
+  alerted_at?: string;
+  updated_at?: string;
+  created_at?: string;
+};
+
+export type MemeStats = {
+  total: number;
+  lp_locked: number;
+  alerted: number;
+};
+
+
 export const api = {
   status: () => req<Status>("/status"),
   wallets: () => req<Wallet[]>("/wallets"),
@@ -111,6 +146,8 @@ export const api = {
   orders: (limit = 50) => req<MintOrder[]>(`/orders?limit=${limit}`),
   mint: (body: { collection: string; quantity?: number }) =>
     req<{ queued: boolean }>("/mint", { method: "POST", body: JSON.stringify(body) }),
+  memes: (limit = 100) => req<MemeToken[]>(`/memes?limit=${limit}`),
+  memeStats: () => req<MemeStats>("/memes/stats"),
 };
 
 export function shortAddr(a: string) {

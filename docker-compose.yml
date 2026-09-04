@@ -61,5 +61,21 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  meme-watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CMD_PATH: ./cmd/meme-watcher
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://bot33:bot33@postgres:5432/bot33?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:

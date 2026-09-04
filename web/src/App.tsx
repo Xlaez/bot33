@@ -7,10 +7,10 @@ import {
   explorerTx,
   shortAddr,
 } from "./api";
-import type { Collection, MintOrder, Settings, Status, Trade, Wallet } from "./api";
+import type { Collection, MemeStats, MemeToken, MintOrder, Settings, Status, Trade, Wallet } from "./api";
 import "./index.css";
 
-type Tab = "wallets" | "activity" | "collections" | "execute";
+type Tab = "wallets" | "activity" | "collections" | "memes" | "execute";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("wallets");
@@ -20,6 +20,8 @@ export default function App() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [orders, setOrders] = useState<MintOrder[]>([]);
+  const [memes, setMemes] = useState<MemeToken[]>([]);
+  const [memeStats, setMemeStats] = useState<MemeStats | null>(null);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
@@ -41,13 +43,15 @@ export default function App() {
   const refresh = useCallback(async () => {
     setError("");
     try {
-      const [s, w, t, c, set, o] = await Promise.all([
+      const [s, w, t, c, set, o, m, ms] = await Promise.all([
         api.status(),
         api.wallets(),
         api.trades(120),
         api.collections(),
         api.settings(),
         api.orders(40),
+        api.memes(120),
+        api.memeStats(),
       ]);
       setStatus(s);
       setWallets(w);
@@ -55,6 +59,8 @@ export default function App() {
       setCollections(c);
       setSettings(set);
       setOrders(o);
+      setMemes(m);
+      setMemeStats(ms);
       if (set.max_spend_eth) setMaxSpendEth(set.max_spend_eth);
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed to load");
@@ -89,6 +95,18 @@ export default function App() {
         t.side.includes(needle),
     );
   }, [trades, q]);
+
+  const filteredMemes = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return memes;
+    return memes.filter(
+      (m) =>
+        m.address.includes(needle) ||
+        m.symbol.toLowerCase().includes(needle) ||
+        m.name.toLowerCase().includes(needle) ||
+        m.dex.includes(needle),
+    );
+  }, [memes, q]);
 
   const filteredCollections = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -172,8 +190,8 @@ export default function App() {
           bot<span>33</span>
         </h1>
         <p className="tagline">
-          Robinhood NFT smart-wallet watch + SeaDrop public mint execution. Cap spend per mint in
-          Execute.
+          Robinhood NFT + memecoin watch. Cap NFT mint spend in Execute. Memes alert only with
+          locked LP.
         </p>
         <div className="stats">
           <div className="stat">
@@ -185,12 +203,12 @@ export default function App() {
             <b>{status?.trades_total ?? "—"}</b>
           </div>
           <div className="stat">
-            <span>Max / NFT</span>
-            <b>{settings?.max_spend_eth ?? "—"} Ξ</b>
+            <span>Memes (&lt;30d)</span>
+            <b>{memeStats?.total ?? "—"}</b>
           </div>
           <div className="stat">
-            <span>Mode</span>
-            <b>{settings?.execute_live ? "LIVE" : "DRY"}</b>
+            <span>LP locked</span>
+            <b>{memeStats?.lp_locked ?? "—"}</b>
           </div>
         </div>
       </header>
@@ -200,6 +218,7 @@ export default function App() {
           [
             ["wallets", "Wallets"],
             ["activity", "NFT activity"],
+            ["memes", "Memecoins"],
             ["collections", "Collections"],
             ["execute", "Execute"],
           ] as const
@@ -480,6 +499,56 @@ export default function App() {
                       </a>
                     </div>
                   </div>
+                </article>
+              ))
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {tab === "memes" ? (
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <h2>Memecoins</h2>
+              <p>
+                Uniswap V2/V3/V4 launches ≤30d from first liquidity. Telegram alerts require locked
+                LP + score ≥70 ({memeStats?.alerted ?? 0} alerted).
+              </p>
+            </div>
+          </div>
+          <div className="list">
+            {filteredMemes.length === 0 ? (
+              <div className="empty">No memecoins tracked yet — start meme-watcher.</div>
+            ) : (
+              filteredMemes.map((m) => (
+                <article className="row" key={m.address}>
+                  <div className="row-main">
+                    <div className="row-title">
+                      <span className="label">{m.symbol || shortAddr(m.address)}</span>
+                      <span className={`chip ${m.lp_locked ? "curated" : "sell"}`}>
+                        {m.lp_locked ? "LP locked" : "LP open"}
+                      </span>
+                      <span className="chip">{m.dex}</span>
+                      <span className="chip">score {m.score.toFixed(0)}</span>
+                    </div>
+                    <div className="addr">
+                      <a href={explorerAddr(m.address)} target="_blank" rel="noreferrer">
+                        {shortAddr(m.address)}
+                      </a>
+                      {" · "}
+                      {m.name}
+                      {" · "}
+                      swaps {m.swap_count}
+                      {m.alerted_at ? " · alerted" : ""}
+                    </div>
+                    <div className="addr">{(m.flags ?? []).join(", ")}</div>
+                  </div>
+                  {m.launch_tx ? (
+                    <a className="btn btn-ghost" href={explorerTx(m.launch_tx)} target="_blank" rel="noreferrer">
+                      Launch tx
+                    </a>
+                  ) : null}
                 </article>
               ))
             )}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gofiber/fiber/v2"
@@ -320,6 +321,21 @@ func main() {
 			Label:      "manual",
 		})
 		return c.JSON(fiber.Map{"queued": true, "collection": addr, "quantity": body.Quantity})
+	})
+
+	api.Get("/memes", func(c *fiber.Ctx) error {
+		rows, err := st.ListMemeTokens(c.Context(), 30*24*time.Hour, c.QueryInt("limit", 100))
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(rows)
+	})
+	api.Get("/memes/stats", func(c *fiber.Ctx) error {
+		total, locked, alerted, err := st.MemeStats(c.Context())
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(fiber.Map{"total": total, "lp_locked": locked, "alerted": alerted})
 	})
 
 	webDir := resolveWebDir()

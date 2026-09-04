@@ -21,6 +21,7 @@ type Config struct {
 	RedisURL           string
 	TelegramBotToken   string
 	TelegramChatID     string
+	TelegramMemeChatID string
 	AlertOnSell        bool
 	WalletsSeedPath    string
 	DiscoveryInterval  time.Duration
@@ -36,6 +37,7 @@ type Config struct {
 	AlertHeatMinSales       int
 	AlertPremiumMultiple    float64
 	CollectionsPath         string
+	MemePollInterval        time.Duration
 	LogPollInterval         time.Duration
 	StartBlockLag           uint64
 	RootDir                 string
@@ -64,6 +66,7 @@ func Load() (Config, error) {
 		RedisURL:                getenv("REDIS_URL", "redis://localhost:6379/0"),
 		TelegramBotToken:        os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramChatID:          os.Getenv("TELEGRAM_CHAT_ID"),
+		TelegramMemeChatID:      os.Getenv("TELEGRAM_MEME_CHAT_ID"),
 		AlertOnSell:             getenvBool("ALERT_ON_SELL", false),
 		WalletsSeedPath:         seedPath,
 		DiscoveryInterval:       getenvDuration("DISCOVERY_INTERVAL", 5*time.Minute),
@@ -79,6 +82,7 @@ func Load() (Config, error) {
 		AlertHeatMinSales:       int(getenvInt64("ALERT_HEAT_MIN_SALES", 3)),
 		AlertPremiumMultiple:    getenvFloat("ALERT_PREMIUM_MULTIPLE", 1.5),
 		CollectionsPath:         collPath,
+		MemePollInterval:        getenvDuration("MEME_POLL_INTERVAL", 5*time.Second),
 		LogPollInterval:         getenvDuration("LOG_POLL_INTERVAL", 3*time.Second),
 		StartBlockLag:           uint64(getenvInt64("START_BLOCK_LAG", 32)),
 		RootDir:                 root,

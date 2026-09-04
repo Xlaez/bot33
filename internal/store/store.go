@@ -132,6 +132,53 @@ CREATE TABLE IF NOT EXISTS mint_orders (
 );
 
 CREATE INDEX IF NOT EXISTS idx_mint_orders_created ON mint_orders(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS meme_tokens (
+  address TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL DEFAULT '',
+  decimals INTEGER NOT NULL DEFAULT 18,
+  paired_with TEXT NOT NULL DEFAULT '',
+  pool_address TEXT NOT NULL DEFAULT '',
+  dex TEXT NOT NULL DEFAULT '',
+  fee_tier INTEGER NOT NULL DEFAULT 0,
+  launch_tx TEXT NOT NULL DEFAULT '',
+  launch_block BIGINT NOT NULL DEFAULT 0,
+  first_liquidity_at TIMESTAMPTZ,
+  lp_locked BOOLEAN NOT NULL DEFAULT FALSE,
+  lp_lock_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+  lp_lock_evidence TEXT NOT NULL DEFAULT '',
+  owner_renounced BOOLEAN NOT NULL DEFAULT FALSE,
+  score DOUBLE PRECISION NOT NULL DEFAULT 0,
+  flags JSONB NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'watching',
+  volume_wei NUMERIC NOT NULL DEFAULT 0,
+  swap_count INTEGER NOT NULL DEFAULT 0,
+  unique_traders INTEGER NOT NULL DEFAULT 0,
+  last_swap_at TIMESTAMPTZ,
+  alerted_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_meme_tokens_liquidity ON meme_tokens(first_liquidity_at DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_meme_tokens_score ON meme_tokens(score DESC);
+CREATE INDEX IF NOT EXISTS idx_meme_tokens_status ON meme_tokens(status);
+
+CREATE TABLE IF NOT EXISTS meme_pools (
+  pool_address TEXT PRIMARY KEY,
+  token0 TEXT NOT NULL,
+  token1 TEXT NOT NULL,
+  meme_token TEXT NOT NULL,
+  quote_token TEXT NOT NULL,
+  dex TEXT NOT NULL,
+  fee_tier INTEGER NOT NULL DEFAULT 0,
+  created_tx TEXT NOT NULL DEFAULT '',
+  created_block BIGINT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_meme_pools_token ON meme_pools(meme_token);
 `
 	_, err := s.db.ExecContext(ctx, q)
 	if err != nil {

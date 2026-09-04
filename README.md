@@ -27,6 +27,20 @@ On the server once:
 
 This stack runs its **own** Postgres (`:5434`) and Redis (`:6381`) so it does not share the other app’s databases.
 
+## Memecoins
+
+Separate `meme-watcher` process (same Postgres) tracks Uniswap V2/V3/V4 launches on Robinhood Chain.
+
+- Age from **first liquidity**, max **30 days**
+- Telegram: `TELEGRAM_MEME_CHAT_ID` (separate from NFT chat)
+- **Hard gate:** alerts only when LP is locked (≥95% V2 LP burned, or V3 position NFT burned)
+- UI: **Memecoins** tab
+
+```bash
+go run ./cmd/meme-watcher
+# or via compose service meme-watcher
+```
+
 ## Discovery
 
 - Windowed scoring over `DISCOVERY_WINDOW` (default 30d)
