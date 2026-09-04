@@ -16,6 +16,7 @@ import (
 	"github.com/xlaez/bot33/internal/enrich"
 	"github.com/xlaez/bot33/internal/execute"
 	"github.com/xlaez/bot33/internal/ingest"
+	"github.com/xlaez/bot33/internal/marketplace"
 	"github.com/xlaez/bot33/internal/store"
 )
 
@@ -88,12 +89,20 @@ func main() {
 			Label:      label,
 		})
 	})
-	scorer := discover.New(st, log, cfg.DiscoveryMinScore, cfg.DiscoveryMinTrades, cfg.DiscoveryInterval)
+	scorer := discover.New(st, log, discover.Options{
+		MinScore:  cfg.DiscoveryMinScore,
+		MinTrades: cfg.DiscoveryMinTrades,
+		TopN:      cfg.DiscoveryTopN,
+		Window:    cfg.DiscoveryWindow,
+		Interval:  cfg.DiscoveryInterval,
+	})
+	mkt := marketplace.New(client.HTTP, st, log, cfg.MarketplaceEnabled, cfg.LogPollInterval, cfg.StartBlockLag)
 
-	errCh := make(chan error, 3)
+	errCh := make(chan error, 4)
 	go func() { errCh <- watcher.Run(ctx) }()
 	go func() { errCh <- scorer.Run(ctx) }()
 	go func() { errCh <- engine.Run(ctx) }()
+	go func() { errCh <- mkt.Run(ctx) }()
 
 	log.Info("watcher started",
 		"chain_id", cfg.ChainID,
@@ -101,6 +110,9 @@ func main() {
 		"poll", cfg.LogPollInterval.String(),
 		"executor", engine.HasSigner(),
 		"signer", engine.SignerAddress(),
+		"discovery_window", cfg.DiscoveryWindow.String(),
+		"discovery_top_n", cfg.DiscoveryTopN,
+		"marketplace", cfg.MarketplaceEnabled,
 	)
 	select {
 	case <-ctx.Done():

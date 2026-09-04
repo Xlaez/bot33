@@ -306,7 +306,14 @@ func (w *Watcher) handleLogs(ctx context.Context, logs []types.Log) error {
 			tokenID = ev.TokenID.String()
 		}
 		side := string(action)
-		_ = w.store.InsertTrade(ctx, matched, ev.Collection.Hex(), tokenID, side, strings.ToLower(ev.TxHash.Hex()), ev.BlockNumber, "0")
+		counterparty := ""
+		switch action {
+		case classify.ActionBuy, classify.ActionMint:
+			counterparty = ev.From.Hex()
+		case classify.ActionSell:
+			counterparty = ev.To.Hex()
+		}
+		_ = w.store.InsertTrade(ctx, matched, ev.Collection.Hex(), tokenID, side, strings.ToLower(ev.TxHash.Hex()), ev.BlockNumber, "0", counterparty, "transfer")
 
 		w.log.Info("nft event",
 			"action", action,

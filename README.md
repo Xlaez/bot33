@@ -14,6 +14,13 @@ go run ./cmd/api        # UI http://127.0.0.1:8080
 go run ./cmd/watcher    # from repo root
 ```
 
+## Discovery
+
+- Windowed scoring over `DISCOVERY_WINDOW` (default 30d)
+- Promote at most `DISCOVERY_TOP_N` (default 40) discovered wallets; demote the rest
+- Wash/bot filters block reciprocal pairs, zero-value flips, and unpriced churn
+- Secondary sales: Seaport 1.6 (`OrderFulfilled`) → `nft_trades` with `value_wei` (`MARKETPLACE_ENABLED`)
+
 ## Execute tab
 
 - **Max spend / NFT** — blocks any mint whose SeaDrop value exceeds the cap

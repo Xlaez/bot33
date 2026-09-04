@@ -87,6 +87,11 @@ CREATE INDEX IF NOT EXISTS idx_nft_trades_wallet ON nft_trades(wallet);
 CREATE INDEX IF NOT EXISTS idx_nft_trades_created ON nft_trades(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_wallets_active_source ON wallets(active, source);
 
+ALTER TABLE nft_trades ADD COLUMN IF NOT EXISTS counterparty TEXT NOT NULL DEFAULT '';
+ALTER TABLE nft_trades ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'transfer';
+CREATE INDEX IF NOT EXISTS idx_nft_trades_wallet_created ON nft_trades(wallet, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_nft_trades_counterparty ON nft_trades(counterparty) WHERE counterparty <> '';
+
 CREATE TABLE IF NOT EXISTS collections (
   address TEXT PRIMARY KEY,
   name TEXT NOT NULL DEFAULT '',
@@ -131,15 +136,17 @@ CREATE INDEX IF NOT EXISTS idx_mint_orders_created ON mint_orders(created_at DES
 }
 
 type Trade struct {
-	ID          int64     `json:"id"`
-	Wallet      string    `json:"wallet"`
-	Collection  string    `json:"collection"`
-	TokenID     string    `json:"token_id"`
-	Side        string    `json:"side"`
-	TxHash      string    `json:"tx_hash"`
-	BlockNumber uint64    `json:"block_number"`
-	ValueWei    string    `json:"value_wei"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID           int64     `json:"id"`
+	Wallet       string    `json:"wallet"`
+	Collection   string    `json:"collection"`
+	TokenID      string    `json:"token_id"`
+	Side         string    `json:"side"`
+	TxHash       string    `json:"tx_hash"`
+	BlockNumber  uint64    `json:"block_number"`
+	ValueWei     string    `json:"value_wei"`
+	Counterparty string    `json:"counterparty,omitempty"`
+	Source       string    `json:"source,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type Collection struct {
@@ -190,7 +197,8 @@ func (s *Store) ListTrades(ctx context.Context, limit int) ([]Trade, error) {
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, wallet, collection, token_id, side, tx_hash, block_number, value_wei::text, created_at
+SELECT id, wallet, collection, token_id, side, tx_hash, block_number, value_wei::text,
+       COALESCE(counterparty,''), COALESCE(source,'transfer'), created_at
 FROM nft_trades
 ORDER BY created_at DESC
 LIMIT $1
@@ -202,7 +210,7 @@ LIMIT $1
 	var out []Trade
 	for rows.Next() {
 		var t Trade
-		if err := rows.Scan(&t.ID, &t.Wallet, &t.Collection, &t.TokenID, &t.Side, &t.TxHash, &t.BlockNumber, &t.ValueWei, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Wallet, &t.Collection, &t.TokenID, &t.Side, &t.TxHash, &t.BlockNumber, &t.ValueWei, &t.Counterparty, &t.Source, &t.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -328,6 +336,7 @@ ON CONFLICT (address) DO UPDATE SET
     ELSE wallets.label
   END,
   source = CASE
+    WHEN EXCLUDED.source = 'blocked' THEN EXCLUDED.source
     WHEN wallets.source = 'curated' THEN wallets.source
     WHEN wallets.source = 'blocked' THEN wallets.source
     ELSE EXCLUDED.source
@@ -335,8 +344,14 @@ ON CONFLICT (address) DO UPDATE SET
   tags = EXCLUDED.tags,
   collections = EXCLUDED.collections,
   evidence = EXCLUDED.evidence,
-  score = GREATEST(wallets.score, EXCLUDED.score),
-  active = EXCLUDED.active,
+  score = CASE
+    WHEN EXCLUDED.source = 'discovered' THEN EXCLUDED.score
+    ELSE GREATEST(wallets.score, EXCLUDED.score)
+  END,
+  active = CASE
+    WHEN wallets.source = 'blocked' OR EXCLUDED.source = 'blocked' THEN FALSE
+    ELSE EXCLUDED.active
+  END,
   updated_at = NOW()
 `, w.Address, w.Label, string(w.Source), tags, cols, ev, w.Score, w.Active)
 	if err != nil {
@@ -426,12 +441,61 @@ ON CONFLICT (name) DO UPDATE SET block_number=EXCLUDED.block_number, updated_at=
 	return err
 }
 
-func (s *Store) InsertTrade(ctx context.Context, walletAddr, collection, tokenID, side, txHash string, block uint64, valueWei string) error {
+func (s *Store) InsertTrade(ctx context.Context, walletAddr, collection, tokenID, side, txHash string, block uint64, valueWei, counterparty, source string) error {
+	if valueWei == "" {
+		valueWei = "0"
+	}
+	if source == "" {
+		source = "transfer"
+	}
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO nft_trades(wallet, collection, token_id, side, tx_hash, block_number, value_wei)
-VALUES ($1,$2,$3,$4,$5,$6,$7)
-`, wallet.NormalizeAddress(walletAddr), wallet.NormalizeAddress(collection), tokenID, side, txHash, block, valueWei)
+INSERT INTO nft_trades(wallet, collection, token_id, side, tx_hash, block_number, value_wei, counterparty, source)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+`, wallet.NormalizeAddress(walletAddr), wallet.NormalizeAddress(collection), tokenID, side, txHash, block, valueWei, wallet.NormalizeAddress(counterparty), source)
 	return err
+}
+
+// SyncDiscoveredWatchSet upserts the top-N discovered set and deactivates prior discovered wallets not kept.
+// Curated wallets are never demoted by this path.
+func (s *Store) SyncDiscoveredWatchSet(ctx context.Context, keep []wallet.Record) (promoted, demoted int, err error) {
+	keepSet := make(map[string]struct{}, len(keep))
+	for _, w := range keep {
+		w.Source = wallet.SourceDiscovered
+		w.Active = true
+		if err := s.UpsertWallet(ctx, w); err != nil {
+			return promoted, demoted, err
+		}
+		keepSet[wallet.NormalizeAddress(w.Address)] = struct{}{}
+		promoted++
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT address FROM wallets WHERE source = 'discovered' AND active = TRUE
+`)
+	if err != nil {
+		return promoted, demoted, err
+	}
+	defer rows.Close()
+	var drop []string
+	for rows.Next() {
+		var addr string
+		if err := rows.Scan(&addr); err != nil {
+			return promoted, demoted, err
+		}
+		if _, ok := keepSet[wallet.NormalizeAddress(addr)]; !ok {
+			drop = append(drop, addr)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return promoted, demoted, err
+	}
+	for _, addr := range drop {
+		if err := s.SetWalletActive(ctx, addr, false); err != nil {
+			return promoted, demoted, err
+		}
+		demoted++
+	}
+	return promoted, demoted, nil
 }
 
 func (s *Store) LoadSeedFile(ctx context.Context, path string) (int, error) {

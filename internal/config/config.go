@@ -25,6 +25,9 @@ type Config struct {
 	DiscoveryInterval  time.Duration
 	DiscoveryMinScore  float64
 	DiscoveryMinTrades int
+	DiscoveryTopN      int
+	DiscoveryWindow    time.Duration
+	MarketplaceEnabled bool
 	LogPollInterval    time.Duration
 	StartBlockLag      uint64
 	RootDir            string
@@ -54,6 +57,9 @@ func Load() (Config, error) {
 		DiscoveryInterval:  getenvDuration("DISCOVERY_INTERVAL", 1*time.Hour),
 		DiscoveryMinScore:  getenvFloat("DISCOVERY_MIN_SCORE", 70),
 		DiscoveryMinTrades: int(getenvInt64("DISCOVERY_MIN_TRADES", 5)),
+		DiscoveryTopN:      int(getenvInt64("DISCOVERY_TOP_N", 40)),
+		DiscoveryWindow:    getenvDuration("DISCOVERY_WINDOW", 30*24*time.Hour),
+		MarketplaceEnabled: getenvBool("MARKETPLACE_ENABLED", true),
 		LogPollInterval:    getenvDuration("LOG_POLL_INTERVAL", 3*time.Second),
 		StartBlockLag:      uint64(getenvInt64("START_BLOCK_LAG", 32)),
 		RootDir:            root,

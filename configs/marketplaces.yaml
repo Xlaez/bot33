@@ -1,0 +1,11 @@
+# Robinhood Chain NFT marketplace routers used for secondary-sale ingest.
+# Verified via eth_getCode + OrderFulfilled logs on chain 4663.
+marketplaces:
+  - name: OpenSea Seaport 1.6
+    address: "0x0000000000000068F116a894984e2DB1123eB395"
+    protocol: seaport
+    notes: "Canonical Seaport 1.6; primary secondary NFT venue on RH Chain."
+  - name: OpenSea SeaDrop
+    address: "0x00005EA00Ac477B1030CE78506496e8C2dE24bf5"
+    protocol: seadrop
+    notes: "Public mint path only; not used for secondary sales."
