@@ -300,13 +300,13 @@ func (p *Poller) decideAndAlert(ctx context.Context, sale *seaport.Sale) (int, e
 
 	sent := 0
 
-	// 2+ smart wallets on same collection = priority (bypass score/heat).
+	// 2+ smart wallets on same collection via priced Seaport buys only.
 	if buyerWatched && p.gate != nil {
 		label := buyer.Label
 		if label == "" {
 			label = wallet.NormalizeAddress(sale.Buyer.Hex())
 		}
-		if p.gate.HandleSecondary(ctx, sale.Collection, sale.Buyer.Hex(), label, sale.TxHash.Hex()) {
+		if p.gate.HandleSecondary(ctx, sale.Collection, sale.Buyer.Hex(), label, sale.TxHash.Hex(), sale.PriceWei) {
 			sent++
 			_, tracked = p.trackedCollection(sale.Collection)
 			if !tracked {
@@ -334,13 +334,17 @@ func (p *Poller) decideAndAlert(ctx context.Context, sale *seaport.Sale) (int, e
 		HeatMinSales:    p.opts.HeatMinSales,
 		PremiumMultiple: p.opts.PremiumMultiple,
 	})
-	if buyDec.Notify {
+	strongMarket := buyDec.Notify &&
+		(containsReason(buyDec.Reasons, "heat-surge") ||
+			containsReason(buyDec.Reasons, "premium") ||
+			containsReason(buyDec.Reasons, "outlier-print"))
+	if strongMarket {
 		if err := p.sendSaleAlert(ctx, sale, "buy", buyDec, buyer, buyerWatched); err != nil {
 			p.log.Error("telegram send failed", "err", err, "tx", sale.TxHash.Hex(), "side", "buy")
 		} else {
 			sent++
 		}
-		if !tracked && (containsReason(buyDec.Reasons, "heat") || containsReason(buyDec.Reasons, "heat-surge")) {
+		if !tracked && containsReason(buyDec.Reasons, "heat-surge") {
 			name := ""
 			if p.enricher != nil {
 				name = p.enricher.CollectionName(ctx, sale.Collection)
@@ -348,7 +352,7 @@ func (p *Poller) decideAndAlert(ctx context.Context, sale *seaport.Sale) (int, e
 			_ = p.store.UpsertCollection(ctx, store.Collection{
 				Address: sale.Collection.Hex(),
 				Name:    name,
-				Notes:   "auto-tracked from marketplace heat",
+				Notes:   "auto-tracked from marketplace heat-surge",
 				Source:  "hot",
 				Active:  true,
 			})

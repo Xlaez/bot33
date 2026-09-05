@@ -1002,31 +1002,63 @@ WHERE collection = $1
 }
 
 func (s *Store) CountDistinctWatchedActors(ctx context.Context, collection string, sides []string, window time.Duration) (int, error) {
+	return s.CountDistinctWatchedActorsFiltered(ctx, collection, sides, nil, window)
+}
+
+// CountDistinctWatchedActorsFiltered counts distinct active curated/discovered wallets.
+// If sources is non-empty, only those nft_trades.source values are included (e.g. "seaport").
+func (s *Store) CountDistinctWatchedActorsFiltered(ctx context.Context, collection string, sides []string, sources []string, window time.Duration) (int, error) {
 	collection = wallet.NormalizeAddress(collection)
 	if window <= 0 {
 		window = 2 * time.Hour
 	}
-	_ = sides // always mint+buy consensus across both paths
-	var n int
-	err := s.db.QueryRowContext(ctx, `
+	if len(sides) == 0 {
+		sides = []string{"mint"}
+	}
+	args := []any{collection, int64(window.Seconds())}
+	sidePlaceholders := make([]string, len(sides))
+	for i, side := range sides {
+		args = append(args, side)
+		sidePlaceholders[i] = fmt.Sprintf("$%d", len(args))
+	}
+	q := fmt.Sprintf(`
 SELECT COUNT(DISTINCT t.wallet) FROM nft_trades t
 INNER JOIN wallets w ON w.address = t.wallet AND w.active = TRUE AND w.source IN ('curated','discovered')
 WHERE t.collection = $1
-  AND t.side IN ('mint', 'buy')
   AND t.created_at >= NOW() - ($2 * INTERVAL '1 second')
-`, collection, int64(window.Seconds())).Scan(&n)
+  AND t.side IN (%s)
+`, strings.Join(sidePlaceholders, ","))
+	if len(sources) > 0 {
+		srcPlaceholders := make([]string, len(sources))
+		for i, src := range sources {
+			args = append(args, src)
+			srcPlaceholders[i] = fmt.Sprintf("$%d", len(args))
+		}
+		q += fmt.Sprintf(" AND t.source IN (%s)", strings.Join(srcPlaceholders, ","))
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx, q, args...).Scan(&n)
 	return n, err
 }
 
 func (s *Store) FirstWatchedActivityAt(ctx context.Context, collection string, sides []string) (*time.Time, error) {
 	collection = wallet.NormalizeAddress(collection)
-	_ = sides
-	var t sql.NullTime
-	err := s.db.QueryRowContext(ctx, `
+	if len(sides) == 0 {
+		sides = []string{"mint"}
+	}
+	args := []any{collection}
+	sidePlaceholders := make([]string, len(sides))
+	for i, side := range sides {
+		args = append(args, side)
+		sidePlaceholders[i] = fmt.Sprintf("$%d", len(args))
+	}
+	q := fmt.Sprintf(`
 SELECT MIN(t.created_at) FROM nft_trades t
 INNER JOIN wallets w ON w.address = t.wallet AND w.active = TRUE AND w.source IN ('curated','discovered')
-WHERE t.collection = $1 AND t.side IN ('mint', 'buy')
-`, collection).Scan(&t)
+WHERE t.collection = $1 AND t.side IN (%s)
+`, strings.Join(sidePlaceholders, ","))
+	var t sql.NullTime
+	err := s.db.QueryRowContext(ctx, q, args...).Scan(&t)
 	if err != nil {
 		return nil, err
 	}
@@ -1035,6 +1067,17 @@ WHERE t.collection = $1 AND t.side IN ('mint', 'buy')
 	}
 	tt := t.Time
 	return &tt, nil
+}
+
+func (s *Store) DeactivateHotCollections(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+UPDATE collections SET active = FALSE, updated_at = NOW()
+WHERE source = 'hot' AND active = TRUE
+`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (s *Store) TryMarkCollectionAlert(ctx context.Context, collection, kind string) (bool, error) {

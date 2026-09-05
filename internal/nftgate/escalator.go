@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"strings"
 	"time"
 
@@ -18,11 +19,11 @@ import (
 )
 
 const (
-	DefaultSmartWalletMin = 2
-	DefaultMintWindow     = 2 * time.Hour
-	DefaultBuyWindow      = 6 * time.Hour
+	DefaultSmartWalletMin   = 2
+	DefaultMintWindow       = 2 * time.Hour
+	DefaultBuyWindow        = 6 * time.Hour
 	DefaultMaxCollectionAge = 24 * time.Hour
-	DefaultMintMaxTotal   = 20
+	DefaultMintMaxTotal     = 20
 )
 
 type SweepFn func(collection common.Address, quantity uint64, walletCount int, signalTx, label string)
@@ -34,19 +35,30 @@ type Escalator struct {
 	telegram *alert.Telegram
 	enricher *enrich.Enricher
 	onSweep  SweepFn
+	minPrice *big.Int
 }
 
 func New(client *ethclient.Client, st *store.Store, log *slog.Logger, tg *alert.Telegram, en *enrich.Enricher, onSweep SweepFn) *Escalator {
-	return &Escalator{client: client, store: st, log: log, telegram: tg, enricher: en, onSweep: onSweep}
+	return &Escalator{client: client, store: st, log: log, telegram: tg, enricher: en, onSweep: onSweep, minPrice: big.NewInt(0)}
+}
+
+func (e *Escalator) SetMinPriceWei(wei string) {
+	if wei == "" || wei == "0" {
+		e.minPrice = big.NewInt(0)
+		return
+	}
+	if v, ok := new(big.Int).SetString(wei, 10); ok {
+		e.minPrice = v
+	}
 }
 
 type Decision struct {
-	Escalate   bool
-	FreeMint   bool
-	Tag        string // FREE_MINT | PRIORITY | SECONDARY_SMART
+	Escalate    bool
+	FreeMint    bool
+	Tag         string // FREE_MINT | SECONDARY_SMART
 	WalletCount int
-	DropOpen   bool
-	Reason     string
+	DropOpen    bool
+	Reason      string
 }
 
 func (e *Escalator) EvaluateMint(ctx context.Context, collection common.Address) (Decision, error) {
@@ -68,14 +80,15 @@ func (e *Escalator) EvaluateMint(ctx context.Context, collection common.Address)
 	}
 
 	coll := wallet.NormalizeAddress(collection.Hex())
-	n, err := e.store.CountDistinctWatchedActors(ctx, coll, []string{"mint", "buy"}, window)
+	// Mints only — ignore transfer "buys" (airdrops/gifts/spam).
+	n, err := e.store.CountDistinctWatchedActorsFiltered(ctx, coll, []string{"mint"}, nil, window)
 	if err != nil {
 		return Decision{}, err
 	}
 	if n < minW {
 		return Decision{WalletCount: n, Reason: "below_smart_wallet_min"}, nil
 	}
-	first, err := e.store.FirstWatchedActivityAt(ctx, coll, []string{"mint", "buy"})
+	first, err := e.store.FirstWatchedActivityAt(ctx, coll, []string{"mint"})
 	if err != nil {
 		return Decision{}, err
 	}
@@ -88,19 +101,17 @@ func (e *Escalator) EvaluateMint(ctx context.Context, collection common.Address)
 		e.log.Warn("seadrop fetch", "err", err, "collection", coll)
 	}
 	now := uint64(time.Now().Unix())
-	free := drop != nil && drop.IsFree() && drop.IsOpen(now)
-	d := Decision{Escalate: true, WalletCount: n, FreeMint: free, DropOpen: drop != nil && drop.IsOpen(now)}
-	if free {
-		d.Tag = "FREE_MINT"
-		d.Reason = "free_seadrop_consensus"
-	} else {
-		d.Tag = "PRIORITY"
-		d.Reason = "smart_wallet_consensus"
+	if drop == nil || !drop.IsFree() || !drop.IsOpen(now) {
+		// Paid / unknown drops are not alert-worthy from mint transfers alone.
+		return Decision{WalletCount: n, DropOpen: drop != nil && drop.IsOpen(now), Reason: "not_free_open_seadrop"}, nil
 	}
-	return d, nil
+	return Decision{
+		Escalate: true, WalletCount: n, FreeMint: true, DropOpen: true,
+		Tag: "FREE_MINT", Reason: "free_seadrop_consensus",
+	}, nil
 }
 
-func (e *Escalator) EvaluateSecondaryBuy(ctx context.Context, collection common.Address) (Decision, error) {
+func (e *Escalator) EvaluateSecondaryBuy(ctx context.Context, collection common.Address, priceWei *big.Int) (Decision, error) {
 	settings, err := e.store.GetSettings(ctx)
 	if err != nil {
 		return Decision{}, err
@@ -113,8 +124,13 @@ func (e *Escalator) EvaluateSecondaryBuy(ctx context.Context, collection common.
 	if window <= 0 {
 		window = DefaultBuyWindow
 	}
+	if e.minPrice != nil && e.minPrice.Sign() > 0 {
+		if priceWei == nil || priceWei.Cmp(e.minPrice) < 0 {
+			return Decision{Reason: "below_min_price"}, nil
+		}
+	}
 	coll := wallet.NormalizeAddress(collection.Hex())
-	n, err := e.store.CountDistinctWatchedActors(ctx, coll, []string{"buy", "mint"}, window)
+	n, err := e.store.CountDistinctWatchedActorsFiltered(ctx, coll, []string{"buy"}, []string{"seaport"}, window)
 	if err != nil {
 		return Decision{}, err
 	}
@@ -128,14 +144,13 @@ func (e *Escalator) EvaluateSecondaryBuy(ctx context.Context, collection common.
 	now := uint64(time.Now().Unix())
 	freeOpen := drop != nil && drop.IsFree() && drop.IsOpen(now)
 	if freeOpen {
-		// Prefer free-mint path; secondary tag not used while free drop is open.
-		return Decision{Escalate: true, WalletCount: n, FreeMint: true, DropOpen: true, Tag: "FREE_MINT", Reason: "free_open_consensus"}, nil
+		return Decision{Escalate: true, WalletCount: n, FreeMint: true, DropOpen: true, Tag: "FREE_MINT", Reason: "free_open_seaport_consensus"}, nil
 	}
-	tag := "SECONDARY_SMART"
-	if drop != nil && drop.IsOpen(now) && !drop.IsFree() {
-		tag = "PRIORITY"
-	}
-	return Decision{Escalate: true, WalletCount: n, FreeMint: false, DropOpen: drop != nil && drop.IsOpen(now), Tag: tag, Reason: "smart_buy_consensus"}, nil
+	return Decision{
+		Escalate: true, WalletCount: n, FreeMint: false,
+		DropOpen: drop != nil && drop.IsOpen(now),
+		Tag: "SECONDARY_SMART", Reason: "seaport_smart_buy_consensus",
+	}, nil
 }
 
 func (e *Escalator) HandleMint(ctx context.Context, collection common.Address, walletAddr, label, txHash string) {
@@ -145,7 +160,7 @@ func (e *Escalator) HandleMint(ctx context.Context, collection common.Address, w
 		return
 	}
 	if !dec.Escalate {
-		e.log.Info("nft event tracked", "collection", collection.Hex(), "wallets", dec.WalletCount, "reason", dec.Reason)
+		e.log.Info("nft mint tracked", "collection", collection.Hex(), "wallets", dec.WalletCount, "reason", dec.Reason)
 		return
 	}
 	kind := strings.ToLower(dec.Tag)
@@ -175,8 +190,8 @@ func (e *Escalator) HandleMint(ctx context.Context, collection common.Address, w
 	}
 }
 
-func (e *Escalator) HandleSecondary(ctx context.Context, collection common.Address, walletAddr, label, txHash string) bool {
-	dec, err := e.EvaluateSecondaryBuy(ctx, collection)
+func (e *Escalator) HandleSecondary(ctx context.Context, collection common.Address, walletAddr, label, txHash string, priceWei *big.Int) bool {
+	dec, err := e.EvaluateSecondaryBuy(ctx, collection, priceWei)
 	if err != nil {
 		e.log.Error("nftgate secondary eval", "err", err)
 		return false

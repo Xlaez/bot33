@@ -17,9 +17,10 @@ Compose **overrides** `DATABASE_URL`/`REDIS_URL` inside services to `postgres:54
 
 ## NFT priority + free mints
 
-- **Silent until consensus:** first smart-wallet mint/buy is tracked only; **second** distinct watched wallet escalates.
-- **FREE_MINT** — SeaDrop public drop, `mintPrice=0`, drop open, collection ≤24h from first watched activity → Telegram + optional auto-sweep.
-- **PRIORITY / SECONDARY_SMART** — same 2-wallet rule on paid mint or Seaport buys (alert only; no Seaport auto-buy yet).
+- **Silent until consensus:** first smart-wallet mint is tracked only; **second** distinct watched minter escalates.
+- **FREE_MINT only on mint path** — SeaDrop `mintPrice=0`, drop open, collection ≤24h → Telegram + optional auto-sweep. Paid/unknown mint consensus does **not** alert (transfer “buys” / gifts never count).
+- **SECONDARY_SMART** — ≥2 watched wallets buying the same collection on **Seaport** (priced ≥ `ALERT_SEAPORT_MIN_ETH`) → alert only.
+- **Market heat** — Telegram only for heat-surge / premium / outlier prints; auto-hot track only on heat-surge. Use UI **Purge hot** (or `POST /collections/purge-hot`) to clear junk `source=hot` rows.
 - **Sell alerts off** by default (`ALERT_ON_SELL=false`).
 - Ungated per-mint Telegram spam removed.
 

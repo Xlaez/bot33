@@ -816,6 +816,25 @@ export default function App() {
                 onClick={async () => {
                   setBusy(true);
                   try {
+                    const r = await api.purgeHotCollections();
+                    notify(`Purged ${r.deactivated} hot collections`);
+                    await refresh();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : "purge failed");
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Purge hot
+              </button>
+              <button
+                className="btn btn-ghost"
+                type="button"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
                     const r = await api.seedCollections();
                     notify(`Loaded ${r.loaded}`);
                     await refresh();

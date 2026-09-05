@@ -88,6 +88,7 @@ func main() {
 	gate := nftgate.New(client.HTTP, st, log, tg, en, func(collection common.Address, quantity uint64, walletCount int, signalTx, label string) {
 		engine.EnqueueSweep(collection, quantity, walletCount, signalTx, label)
 	})
+	gate.SetMinPriceWei(cfg.AlertSeaportMinWei)
 	watcher := ingest.New(client.HTTP, st, en, tg, log, cfg.AlertOnSell, cfg.LogPollInterval, cfg.StartBlockLag)
 	watcher.SetOnMint(func(collection common.Address, walletAddr, label, txHash string) {
 		gate.HandleMint(ctx, collection, walletAddr, label, txHash)

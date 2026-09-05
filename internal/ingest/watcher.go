@@ -333,7 +333,8 @@ func (w *Watcher) handleLogs(ctx context.Context, logs []types.Log) error {
 			}
 		}
 
-		if (action == classify.ActionMint || action == classify.ActionBuy) && w.onMint != nil {
+		// Only real mints feed free-mint / consensus — transfer "buys" are mostly gifts/spam.
+		if action == classify.ActionMint && w.onMint != nil {
 			w.onMint(ev.Collection, matched, rec.Label, ev.TxHash.Hex())
 		}
 	}

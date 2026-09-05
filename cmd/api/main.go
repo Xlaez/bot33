@@ -209,6 +209,13 @@ func main() {
 		}
 		return c.JSON(fiber.Map{"loaded": n})
 	})
+	api.Post("/collections/purge-hot", func(c *fiber.Ctx) error {
+		n, err := st.DeactivateHotCollections(c.Context())
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(fiber.Map{"deactivated": n})
+	})
 
 	rpcCtx, rpcCancel := context.WithCancel(ctx)
 	defer rpcCancel()

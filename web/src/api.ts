@@ -170,6 +170,8 @@ export const api = {
   deleteCollection: (address: string) =>
     req<void>(`/collections/${address}`, { method: "DELETE" }),
   seedCollections: () => req<{ loaded: number }>("/collections/seed", { method: "POST" }),
+  purgeHotCollections: () =>
+    req<{ deactivated: number }>("/collections/purge-hot", { method: "POST" }),
   settings: () => req<Settings>("/settings"),
   saveSettings: (body: Partial<Settings> & { max_spend_eth?: string; meme_max_spend_eth?: string }) =>
     req<Settings>("/settings", { method: "PUT", body: JSON.stringify(body) }),
